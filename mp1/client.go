@@ -9,18 +9,10 @@ import (
 	"time"
 )
 
-// List of VM addresses in the cluster
+// List of only the first two VMs for testing
 var machines = []string{
 	"http://fa24-cs425-0701.cs.illinois.edu:8080",
 	"http://fa24-cs425-0702.cs.illinois.edu:8080",
-	"http://fa24-cs425-0703.cs.illinois.edu:8080",
-	"http://fa24-cs425-0704.cs.illinois.edu:8080",
-	"http://fa24-cs425-0705.cs.illinois.edu:8080",
-	"http://fa24-cs425-0706.cs.illinois.edu:8080",
-	"http://fa24-cs425-0707.cs.illinois.edu:8080",
-	"http://fa24-cs425-0708.cs.illinois.edu:8080",
-	"http://fa24-cs425-0709.cs.illinois.edu:8080",
-	"http://fa24-cs425-0710.cs.illinois.edu:8080",
 }
 
 // queryMachine sends an HTTP request to a specific machine to perform a grep search.
@@ -72,7 +64,7 @@ func main() {
 	wg.Add(1)
 	go localGrep(pattern, &wg, results)
 
-	// Perform grep on each remote machine
+	// Perform grep on each remote machine (for now, only the first two VMs)
 	for _, machine := range machines {
 		wg.Add(1)
 		go queryMachine(machine, pattern, &wg, results)
