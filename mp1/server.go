@@ -8,43 +8,43 @@ import (
 	"strings"
 )
 
-// grepHandler handles HTTP requests to perform a grep search with user-provided options.
+// grepHandler processes the pattern and options from the client, executes grep, and returns the result.
 func grepHandler(w http.ResponseWriter, r *http.Request) {
-	// Retrieve the 'pattern' and 'options' query parameters
-	query := r.URL.Query().Get("pattern")
+	// Get the pattern and options from the query parameters
+	pattern := r.URL.Query().Get("pattern")
 	options := r.URL.Query().Get("options")
 
-	if query == "" {
+	if pattern == "" {
 		http.Error(w, "Pattern query parameter is missing", http.StatusBadRequest)
 		return
 	}
 
-	// Split the options by spaces (for multi-word options)
-	optionArgs := strings.Fields(options)
+	// Split the options by spaces to get individual arguments
+	optionArgs := strings.Fields(options) // Split options into arguments
 
-	// Construct the full command with pattern and options
-	cmdArgs := append(optionArgs, query, "machine.log") // Replace "machine.log" with the actual log file path
+	// Construct the command arguments: options, pattern, and the log file path
+	cmdArgs := append(optionArgs, pattern, "machine.log") // Adjust "machine.log" as needed
 
 	// Execute the grep command
 	cmd := exec.Command("grep", cmdArgs...)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput() // CombinedOutput captures both stdout and stderr
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to execute grep: %v", err), http.StatusInternalServerError)
+		// Return both the error and the output for debugging purposes
+		http.Error(w, fmt.Sprintf("Failed to execute grep: %v\nOutput: %s", err, output), http.StatusInternalServerError)
 		return
 	}
 
-	// Send back the result with the matching lines
+	// Return the grep output as the response
 	w.WriteHeader(http.StatusOK)
 	w.Write(output)
 }
 
 func main() {
-	// Register the grep handler for /grep
-	fmt.Printf("Here!")
+	// Handle requests to /grep
 	http.HandleFunc("/grep", grepHandler)
 
 	// Define the port to listen on
 	const port = ":8080"
-	fmt.Printf("Starting server on %s...\n", port)
+	fmt.Printf("Server starting on %s...\n", port)
 	log.Fatal(http.ListenAndServe(port, nil))
 }
