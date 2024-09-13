@@ -40,6 +40,7 @@ func grepHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// Register the grep handler for /grep
+	fmt.Printf("Here!")
 	http.HandleFunc("/grep", grepHandler)
 
 	// Define the port to listen on
