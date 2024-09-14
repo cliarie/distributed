@@ -14,10 +14,10 @@ import (
 var machines = []string{
 	"http://fa24-cs425-0701.cs.illinois.edu:8080",
 	"http://fa24-cs425-0702.cs.illinois.edu:8080",
-	// Add other VMs here
+	// Add more VMs as needed
 }
 
-// queryMachine sends an HTTP request to a specific machine to perform a grep search with options.
+// queryMachine sends a grep request to a remote machine.
 func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
 
@@ -31,31 +31,36 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 	}
 	defer resp.Body.Close()
 
+	// Read and return the response body
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		results <- fmt.Sprintf("Error reading response from %s: %v", machineURL, err)
 		return
 	}
-
 	results <- fmt.Sprintf("Results from %s:\n%s", machineURL, string(body))
 }
 
-// localGrep performs a grep search on the local log file with options.
+// localGrep runs the grep command locally on the machine's log file.
 func localGrep(pattern, options string, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
 
-	// Split the options into arguments
+	// Add the mandatory flags: -n (line numbers) and -H (show filenames)
+	mandatoryFlags := []string{"-n", "-H"}
+
+	// Split options into arguments
 	optionArgs := strings.Fields(options)
 
-	// Construct the full grep command with options
-	cmdArgs := append(optionArgs, pattern, "machine.log") // Adjust "machine.log" as needed
+	// Construct the grep command: mandatory flags + user options + pattern + log file
+	cmdArgs := append(mandatoryFlags, optionArgs...)
+	cmdArgs = append(cmdArgs, pattern, "vm2.log")
+
+	// Execute the grep command
 	cmd := exec.Command("grep", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		results <- fmt.Sprintf("Error performing local grep: %v\nOutput: %s", err, output)
 		return
 	}
-
 	results <- fmt.Sprintf("Results from local machine:\n%s", string(output))
 }
 
