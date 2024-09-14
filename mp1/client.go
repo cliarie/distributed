@@ -52,6 +52,12 @@ func main() {
 
     pattern := os.Args[len(os.Args)-1]
     options := os.Args[1 : len(os.Args)-1]
+	for _, option := range options {
+        if !strings.HasPrefix(option, "-") {
+            fmt.Printf("Invalid option: %s. All options must start with '-'.\n", option)
+            os.Exit(1)
+        }
+    }
 	encodedOptions := strings.Join(options, "+")
 
 	results := make(chan string, len(machines)+1)
