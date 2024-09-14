@@ -8,6 +8,7 @@ import (
 	"sync"
 	"strconv"
 	"time"
+	"os"
 )
 
 var machines = []string{
@@ -44,15 +45,14 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 }
 
 func main() {
-	var pattern string
-	fmt.Print("Enter the pattern to search: ")
-	fmt.Scanln(&pattern)
+	if len(os.Args) < 2 {
+        fmt.Println("Usage: [args] [pattern]")
+        os.Exit(1)
+    }
 
-	var options string
-	fmt.Print("Enter any additional grep options (or leave empty for none): ")
-	fmt.Scanln(&options)
-
-	encodedOptions := strings.ReplaceAll(options, " ", "+")
+    pattern := os.Args[len(os.Args)-1]
+    options := os.Args[1 : len(os.Args)-1]
+	encodedOptions := strings.Join(options, "+")
 
 	results := make(chan string, len(machines)+1)
 	var wg sync.WaitGroup
@@ -70,14 +70,14 @@ func main() {
 	total := 0
 	for result := range results {
 		fmt.Printf(result)
-		if strings.Contains(options, "-c"){
+		if strings.Contains(encodedOptions, "-c"){
 			index := strings.Index(result, ":")
 			matches, _ := strconv.Atoi(result[index + 1:len(result) - 1])
 			total += matches	
 		}
 
 	}
-	if strings.Contains(options, "-c"){
+	if strings.Contains(encodedOptions, "-c"){
 		fmt.Printf("has %d total matches\n", total)
 	}
 
