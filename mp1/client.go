@@ -36,7 +36,6 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 	}
 	defer resp.Body.Close()
 
-	// Read and return the response body
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		results <- fmt.Sprintf("Error reading response from %s: %v", machineURL, err)
@@ -46,35 +45,29 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 }
 
 func main() {
-	// Prompt the user for the pattern to search
 	var pattern string
 	fmt.Print("Enter the pattern to search: ")
 	fmt.Scanln(&pattern)
 
-	// Prompt the user for grep options
 	var options string
 	fmt.Print("Enter any additional grep options (or leave empty for none): ")
 	fmt.Scanln(&options)
 
-	// URL encode the options to handle spaces and special characters
 	encodedOptions := strings.ReplaceAll(options, " ", "+")
 
 	results := make(chan string, len(machines)+1)
 	var wg sync.WaitGroup
 
-	// Perform grep on each remote machine
 	for _, machine := range machines {
 		wg.Add(1)
 		go queryMachine(machine, pattern, encodedOptions, &wg, results)
 	}
 
-	// Wait for all goroutines to finish
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Print results as they arrive
 	total := 0
 	for result := range results {
 		fmt.Printf(result)
