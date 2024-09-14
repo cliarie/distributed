@@ -10,10 +10,17 @@ import (
 	"time"
 )
 
-// List of VM addresses (server URLs) in the cluster
 var machines = []string{
 	"http://fa24-cs425-0701.cs.illinois.edu:8080",
 	"http://fa24-cs425-0702.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0703.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0704.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0705.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0706.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0707.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0708.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0709.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0710.cs.illinois.edu:8080",
 	// Add more VMs as needed
 }
 
