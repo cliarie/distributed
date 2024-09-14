@@ -5,7 +5,23 @@ import (
     "os/exec"
 	"fmt"
 	"math/rand"
+    "net/http"
+	"strings"
+	"strconv"
 )
+
+var machines = []string{
+	"http://fa24-cs425-0701.cs.illinois.edu:8080",
+	"http://fa24-cs425-0702.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0703.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0704.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0705.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0706.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0707.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0708.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0709.cs.illinois.edu:8080",
+	// "http://fa24-cs425-0710.cs.illinois.edu:8080",
+}
 
 const letters = "abcdefghijklmnopqrstuvwxyz"
 var set = make(map[string]struct{})
@@ -26,39 +42,39 @@ func generateRandomWord(length int) string {
 }
 
 func main() {
-    testCases := []struct {
-        name           string
-        args           []string
-        expectedOutput string
-    }{
-        {
-            name:           "Invalid Input Length",
-            args:           []string{},
-            expectedOutput: "Usage: [args] [pattern]\n",
-        },
-		{
-            name:           "Invalid Args",
-            args:           []string{"13132","-a","ok"},
-            expectedOutput: "Invalid option: 13132. All options must start with '-'.\n",
-        },
-    }
+    // testCases := []struct {
+    //     name           string
+    //     args           []string
+    //     expectedOutput string
+    // }{
+    //     {
+    //         name:           "Invalid Input Length",
+    //         args:           []string{},
+    //         expectedOutput: "Usage: [args] [pattern]\n",
+    //     },
+	// 	{
+    //         name:           "Invalid Args",
+    //         args:           []string{"13132","-a","ok"},
+    //         expectedOutput: "Invalid option: 13132. All options must start with '-'.\n",
+    //     },
+    // }
 
-    for _, tc := range testCases {
-		cmd := exec.Command("go", "run", "client.go")
-		cmd.Args = append(cmd.Args, tc.args...)
-        var out bytes.Buffer
-        var errOut bytes.Buffer
-        cmd.Stdout = &out
-        cmd.Stderr = &errOut
-		cmd.Run()
+    // for _, tc := range testCases {
+	// 	cmd := exec.Command("go", "run", "client.go")
+	// 	cmd.Args = append(cmd.Args, tc.args...)
+    //     var out bytes.Buffer
+    //     var errOut bytes.Buffer
+    //     cmd.Stdout = &out
+    //     cmd.Stderr = &errOut
+	// 	cmd.Run()
 
-        actualOutput := out.String()
-        if actualOutput != tc.expectedOutput {
-            fmt.Printf("Output mismatch for %s.\nExpected:\n%s\nGot:\n%s\n", tc.name, tc.expectedOutput, actualOutput)
-        } else {
-            fmt.Printf("Test %s passed.\n", tc.name)
-        }
-    }
+    //     actualOutput := out.String()
+    //     if actualOutput != tc.expectedOutput {
+    //         fmt.Printf("Output mismatch for %s.\nExpected:\n%s\nGot:\n%s\n", tc.name, tc.expectedOutput, actualOutput)
+    //     } else {
+    //         fmt.Printf("Test %s passed.\n", tc.name)
+    //     }
+    // }
 
 	//distributed tests
 	//first generate some known and some random stuff in each log file
@@ -127,16 +143,81 @@ func main() {
 		}
 	}
 
-
-	for i, log := range logs {
-		fmt.Printf("logs[%d]: %s", i, log)
+	for i := 0; i < 1; i++ {
+		payload := []byte(strings.Join(logs[i], ""))
+		req, _ := http.NewRequest("POST", machines[i] + "/upload", bytes.NewBuffer(payload))
+		req.Header.Set("Content-Type", "text/plain")
+		client := &http.Client{}
+		resp, _ := client.Do(req)
+		defer resp.Body.Close()
 	}
 
-	// for log in logs
-	// upload log to machien i using endpoint
+	cmd := exec.Command("go", "run", "client.go", "-c", "-t", rareAll)
+    var out bytes.Buffer
+    cmd.Stdout = &out
+	cmd.Run()
+	parts := strings.Fields(out.String())
+	count, _ := strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("rareAll matches: %d\n", count)
 
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", rareSome)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("rareSome matches: %d\n", count)
 
-	// grep -> compare results -c
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", rareOne)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("rareOne matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqAll)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("freqAll matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqSome)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("freqSome matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqOne)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("freqOne matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqAll)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("somewhatFreqAll matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqSome)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("somewhatFreqSome matches: %d\n", count)
+
+	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqOne)
+    cmd.Stdout = &out
+	cmd.Run()
+	parts = strings.Fields(out.String())
+	count, _ = strconv.Atoi(parts[len(parts) - 1])
+	fmt.Printf("somewhatFreqOne matches: %d\n", count)
+
+	
+
 
 	// frequentAll := generateRandomWord(4)
 
@@ -145,5 +226,13 @@ func main() {
 
 	// -> run client
 	// -> check answers
-	
+
+	//delete log files
+
+	// for i := 0; i < 1; i++ {
+	// 	req, _ := http.NewRequest("DELETE", machines[i] + "/delete", nil)
+	// 	client := &http.Client{}
+	// 	resp, _ := client.Do(req)
+	// 	defer resp.Body.Close()
+	// }
 }
