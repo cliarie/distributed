@@ -21,9 +21,10 @@ func grepHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Split the options by spaces to get individual arguments
 	optionArgs := strings.Fields(options) // Split options into arguments
+	optionArgs = append(optionArgs, "-n", "-H")
 
 	// Construct the command arguments: options, pattern, and the log file path
-	cmdArgs := append(optionArgs, pattern, "machine.log") // Adjust "machine.log" as needed
+	cmdArgs := append(optionArgs, pattern, "vm1.log")
 
 	// Execute the grep command
 	cmd := exec.Command("grep", cmdArgs...)
