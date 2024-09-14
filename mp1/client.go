@@ -44,7 +44,7 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 		results <- fmt.Sprintf("Error reading response from %s: %v", machineURL, err)
 		return
 	}
-	results <- fmt.Sprintf("Results from %s:\n%s", machineURL, string(body))
+	results <- fmt.Sprintf("%s\n", string(body))
 }
 
 // localGrep runs the grep command locally on the machine's log file.
@@ -108,15 +108,5 @@ func main() {
 	totalMatches := 0
 	for result := range results {
 		fmt.Println(result)
-
-		// Count total number of matching lines by splitting the result by newline
-		lines := strings.Split(result, "\n")
-		for _, line := range lines {
-			if line != "" && !strings.HasPrefix(line, "Error") && strings.Contains(line, ":") {
-				totalMatches++
-			}
-		}
 	}
-
-	fmt.Printf("\nTotal matching lines: %d\n", totalMatches)
 }
