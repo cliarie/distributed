@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -64,10 +63,6 @@ func main() {
 	results := make(chan string, len(machines)+1)
 	var wg sync.WaitGroup
 
-	// Perform local grep
-	wg.Add(1)
-	go localGrep(pattern, options, &wg, results)
-
 	// Perform grep on each remote machine
 	for _, machine := range machines {
 		wg.Add(1)
@@ -81,7 +76,6 @@ func main() {
 	}()
 
 	// Print results as they arrive
-	totalMatches := 0
 	for result := range results {
 		fmt.Println(result)
 	}
