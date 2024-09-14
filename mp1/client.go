@@ -26,7 +26,6 @@ var machines = []string{
 func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
 
-	// Build the request URL with pattern and options
 	url := fmt.Sprintf("%s/grep?pattern=%s&options=%s", machineURL, pattern, options)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
