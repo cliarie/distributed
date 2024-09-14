@@ -29,6 +29,13 @@ func grepHandler(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("grep", cmdArgs...)
 	output, err := cmd.CombinedOutput() // CombinedOutput captures both stdout and stderr
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			if exitError.ExitCode() == 1 {
+				// Exit code 1 indicates no matches were found; handle this gracefully
+				w.WriteHeader(http.StatusOK) // Return a 200 OK with empty body
+				return
+			}
+		}
 		// Return both the error and the output for debugging purposes
 		http.Error(w, fmt.Sprintf("Failed to execute grep: %v\nOutput: %s", err, output), http.StatusInternalServerError)
 		return
