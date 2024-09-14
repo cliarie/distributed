@@ -20,7 +20,7 @@ func grepHandler(w http.ResponseWriter, r *http.Request) {
 	optionArgs := strings.Fields(options) 
 	optionArgs = append(optionArgs, "-n", "-H")
 
-	cmdArgs := append(optionArgs, pattern, "vm2.log")
+	cmdArgs := append(optionArgs, pattern, "vm1.log")
 
 	cmd := exec.Command("grep", cmdArgs...)
 	output, err := cmd.CombinedOutput() 
