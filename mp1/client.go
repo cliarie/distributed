@@ -47,30 +47,6 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 	results <- fmt.Sprintf("%s\n", string(body))
 }
 
-// localGrep runs the grep command locally on the machine's log file.
-func localGrep(pattern, options string, wg *sync.WaitGroup, results chan<- string) {
-	defer wg.Done()
-
-	// Add the mandatory flags: -n (line numbers) and -H (show filenames)
-	mandatoryFlags := []string{"-n", "-H"}
-
-	// Split options into arguments
-	optionArgs := strings.Fields(options)
-
-	// Construct the grep command: mandatory flags + user options + pattern + log file
-	cmdArgs := append(mandatoryFlags, optionArgs...)
-	cmdArgs = append(cmdArgs, pattern, "vm2.log")
-
-	// Execute the grep command
-	cmd := exec.Command("grep", cmdArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		results <- fmt.Sprintf("Error performing local grep: %v\nOutput: %s", err, output)
-		return
-	}
-	results <- fmt.Sprintf("Results from local machine:\n%s", string(output))
-}
-
 func main() {
 	// Prompt the user for the pattern to search
 	var pattern string
