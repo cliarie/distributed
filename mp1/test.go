@@ -80,51 +80,64 @@ func main() {
 
 	var logs [10][]string
 
+	rareCount := rand.Intn(3) + 1
 	rareAll := generateRandomWord(4)
 	for i := 0; i < 10; i++ {
-		logs[i] = append(logs[i], rareAll, "\n")
+		for j := 0; j < rareCount; j++ {
+			logs[i] = append(logs[i], rareAll, "\n")
+		}
 	}
 	rareSome := generateRandomWord(4)
 	for i := 0; i < 4; i++ {
-		logs[i] = append(logs[i], rareSome, "\n")
+		for j := 0; j < rareCount; j++ {
+			logs[i] = append(logs[i], rareSome, "\n")
+		}
 	}
 	rareOne := generateRandomWord(4)
 	for i := 0; i < 1; i++ {
-		logs[i] = append(logs[i], rareOne, "\n")
+		for j := 0; j < rareCount; j++ {
+			logs[i] = append(logs[i], rareOne, "\n")
+		}
 	}
+
+
+	freqCount := rand.Intn(50) + 50
 	freqAll := generateRandomWord(4)
 	for i := 0; i < 10; i++ {
-		for j := 0; j < 50; j++ {
+		for j := 0; j < freqCount; j++ {
 			logs[i] = append(logs[i], freqAll, "\n")
 		}
 	}
 	freqSome := generateRandomWord(4)
 	for i := 0; i < 4; i++ {
-		for j := 0; j < 50; j++ {
+		for j := 0; j < freqCount; j++ {
 			logs[i] = append(logs[i], freqSome, "\n")
 		}
 	}
 	freqOne := generateRandomWord(4)
 	for i := 0; i < 1; i++ {
-		for j := 0; j < 50; j++ {
+		for j := 0; j < freqCount; j++ {
 			logs[i] = append(logs[i], freqOne, "\n")
 		}
 	}
+
+	
+	somewhatFreqCount := rand.Intn(10) + 10
 	somewhatFreqAll := generateRandomWord(4)
 	for i := 0; i < 10; i++ {
-		for j := 0; j < 10; j++ {
+		for j := 0; j < somewhatFreqCount; j++ {
 			logs[i] = append(logs[i], somewhatFreqAll, "\n")
 		}
 	}
 	somewhatFreqSome := generateRandomWord(4)
 	for i := 0; i < 4; i++ {
-		for j := 0; j < 10; j++ {
+		for j := 0; j < somewhatFreqCount; j++ {
 			logs[i] = append(logs[i], somewhatFreqSome, "\n")
 		}
 	}
 	somewhatFreqOne := generateRandomWord(4)
 	for i := 0; i < 1; i++ {
-		for j := 0; j < 10; j++ {
+		for j := 0; j < somewhatFreqCount; j++ {
 			logs[i] = append(logs[i], somewhatFreqOne, "\n")
 		}
 	}
@@ -145,7 +158,7 @@ func main() {
 	parts := strings.Fields(out.String())
 	count, _ := strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareAll matches: %d\n", count)
-	if count == 10 {
+	if count == rareCount * 10 {
         fmt.Println("rareAll case passed")
 		passed += 1
     } else {
@@ -159,7 +172,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareSome matches: %d\n", count)
-	if count == 4 {
+	if count == rareCount * 4 {
         fmt.Println("rareSome case passed")
 		passed += 1
     } else {
@@ -173,7 +186,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareOne matches: %d\n", count)
-	if count == 1 {
+	if count == rareCount * 1 {
         fmt.Println("rareOne case passed")
 		passed += 1
     } else {
@@ -187,7 +200,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqAll matches: %d\n", count)
-	if count == 500 {
+	if count == freqCount * 10 {
         fmt.Println("freqAll case passed")
 		passed += 1
     } else {
@@ -201,7 +214,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqSome matches: %d\n", count)
-	if count == 200 {
+	if count == freqCount * 4 {
         fmt.Println("freqSome case passed")
 		passed += 1
     } else {
@@ -215,7 +228,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqOne matches: %d\n", count)
-	if count == 50 {
+	if count == freqCount * 1 {
         fmt.Println("freqOne case passed")
 		passed += 1
     } else {
@@ -229,7 +242,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqAll matches: %d\n", count)
-	if count == 100 {
+	if count == somewhatFreqCount * 10 {
         fmt.Println("somewhatFreqAll case passed")
 		passed += 1
     } else {
@@ -243,7 +256,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqSome matches: %d\n", count)
-	if count == 40 {
+	if count == somewhatFreqCount * 4 {
         fmt.Println("somewhatFreqSome case passed")
 		passed += 1
     } else {
@@ -257,7 +270,7 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqOne matches: %d\n", count)
-	if count == 10 {
+	if count == somewhatFreqCount * 1 {
         fmt.Println("somewhatFreqOne case passed")
 		passed += 1
     } else {
