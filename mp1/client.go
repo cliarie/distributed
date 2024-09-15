@@ -14,14 +14,14 @@ import (
 var machines = []string{
 	"http://fa24-cs425-0701.cs.illinois.edu:8080",
 	"http://fa24-cs425-0702.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0703.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0704.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0705.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0706.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0707.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0708.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0709.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0710.cs.illinois.edu:8080",
+	"http://fa24-cs425-0703.cs.illinois.edu:8080",
+	"http://fa24-cs425-0704.cs.illinois.edu:8080",
+	"http://fa24-cs425-0705.cs.illinois.edu:8080",
+	"http://fa24-cs425-0706.cs.illinois.edu:8080",
+	"http://fa24-cs425-0707.cs.illinois.edu:8080",
+	"http://fa24-cs425-0708.cs.illinois.edu:8080",
+	"http://fa24-cs425-0709.cs.illinois.edu:8080",
+	"http://fa24-cs425-0710.cs.illinois.edu:8080",
 }
 
 func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
@@ -31,16 +31,12 @@ func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, resul
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		results <- fmt.Sprintf("Error querying %s: %v", machineURL, err)
+		// results <- fmt.Sprintf("Error querying %s: %v", machineURL, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		results <- fmt.Sprintf("Error reading response from %s: %v", machineURL, err)
-		return
-	}
+	body, _ := ioutil.ReadAll(resp.Body)
 	results <- fmt.Sprintf("%s", string(body))
 }
 
@@ -78,6 +74,9 @@ func main() {
 		fmt.Printf(result)
 		if strings.Contains(encodedOptions, "-c"){
 			index := strings.Index(result, ":")
+			if index < 0 {
+				continue
+			}
 			matches, _ := strconv.Atoi(result[index + 1:len(result) - 1])
 			total += matches	
 		}

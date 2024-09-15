@@ -13,14 +13,14 @@ import (
 var machines = []string{
 	"http://fa24-cs425-0701.cs.illinois.edu:8080",
 	"http://fa24-cs425-0702.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0703.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0704.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0705.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0706.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0707.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0708.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0709.cs.illinois.edu:8080",
-	// "http://fa24-cs425-0710.cs.illinois.edu:8080",
+	"http://fa24-cs425-0703.cs.illinois.edu:8080",
+	"http://fa24-cs425-0704.cs.illinois.edu:8080",
+	"http://fa24-cs425-0705.cs.illinois.edu:8080",
+	"http://fa24-cs425-0706.cs.illinois.edu:8080",
+	"http://fa24-cs425-0707.cs.illinois.edu:8080",
+	"http://fa24-cs425-0708.cs.illinois.edu:8080",
+	"http://fa24-cs425-0709.cs.illinois.edu:8080",
+	"http://fa24-cs425-0710.cs.illinois.edu:8080",
 }
 
 const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -42,55 +42,41 @@ func generateRandomWord(length int) string {
 }
 
 func main() {
-    // testCases := []struct {
-    //     name           string
-    //     args           []string
-    //     expectedOutput string
-    // }{
-    //     {
-    //         name:           "Invalid Input Length",
-    //         args:           []string{},
-    //         expectedOutput: "Usage: [args] [pattern]\n",
-    //     },
-	// 	{
-    //         name:           "Invalid Args",
-    //         args:           []string{"13132","-a","ok"},
-    //         expectedOutput: "Invalid option: 13132. All options must start with '-'.\n",
-    //     },
-    // }
+    testCases := []struct {
+        name           string
+        args           []string
+        expectedOutput string
+    }{
+        {
+            name:           "Invalid Input Length",
+            args:           []string{},
+            expectedOutput: "Usage: [args] [pattern]\n",
+        },
+		{
+            name:           "Invalid Args",
+            args:           []string{"13132","-a","ok"},
+            expectedOutput: "Invalid option: 13132. All options must start with '-'.\n",
+        },
+    }
 
-    // for _, tc := range testCases {
-	// 	cmd := exec.Command("go", "run", "client.go")
-	// 	cmd.Args = append(cmd.Args, tc.args...)
-    //     var out bytes.Buffer
-    //     var errOut bytes.Buffer
-    //     cmd.Stdout = &out
-    //     cmd.Stderr = &errOut
-	// 	cmd.Run()
+	passed := 0
+    for _, tc := range testCases {
+		cmd := exec.Command("go", "run", "client.go")
+		cmd.Args = append(cmd.Args, tc.args...)
+        var out bytes.Buffer
+        var errOut bytes.Buffer
+        cmd.Stdout = &out
+        cmd.Stderr = &errOut
+		cmd.Run()
 
-    //     actualOutput := out.String()
-    //     if actualOutput != tc.expectedOutput {
-    //         fmt.Printf("Output mismatch for %s.\nExpected:\n%s\nGot:\n%s\n", tc.name, tc.expectedOutput, actualOutput)
-    //     } else {
-    //         fmt.Printf("Test %s passed.\n", tc.name)
-    //     }
-    // }
-
-	//distributed tests
-	//first generate some known and some random stuff in each log file
-	//then write tests for grep for inputs that 
-	// rare, frequent, somewhat frequent
-	// x
-	// one/some/all logs
-	// generate log (exists on all machines)
-	// just generates a log with the given text by the caller
-	// we will call and have 5 known line the same across all logs
-	// rare: 1x in 1/5/10 logs
-	// somewhat frequent: 10x in 1/5/10 logs
-	// frequent: 50x in 1/5/10 logs
-	// Input generation: inputs[10]
-	//  1 2 3 ... 10
-	//  ->
+        actualOutput := out.String()
+        if actualOutput != tc.expectedOutput {
+            fmt.Printf("Output mismatch for %s.\nExpected:\n%s\nGot:\n%s\n", tc.name, tc.expectedOutput, actualOutput)
+        } else {
+            fmt.Printf("Test %s passed.\n", tc.name)
+			passed += 1
+        }
+    }
 
 	var logs [10][]string
 
@@ -99,7 +85,7 @@ func main() {
 		logs[i] = append(logs[i], rareAll, "\n")
 	}
 	rareSome := generateRandomWord(4)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 4; i++ {
 		logs[i] = append(logs[i], rareSome, "\n")
 	}
 	rareOne := generateRandomWord(4)
@@ -113,7 +99,7 @@ func main() {
 		}
 	}
 	freqSome := generateRandomWord(4)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 4; i++ {
 		for j := 0; j < 50; j++ {
 			logs[i] = append(logs[i], freqSome, "\n")
 		}
@@ -131,7 +117,7 @@ func main() {
 		}
 	}
 	somewhatFreqSome := generateRandomWord(4)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 4; i++ {
 		for j := 0; j < 10; j++ {
 			logs[i] = append(logs[i], somewhatFreqSome, "\n")
 		}
@@ -143,13 +129,13 @@ func main() {
 		}
 	}
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 10; i++ {
 		payload := []byte(strings.Join(logs[i], ""))
 		req, _ := http.NewRequest("POST", machines[i] + "/upload", bytes.NewBuffer(payload))
 		req.Header.Set("Content-Type", "text/plain")
 		client := &http.Client{}
 		resp, _ := client.Do(req)
-		defer resp.Body.Close()
+		resp.Body.Close()
 	}
 
 	cmd := exec.Command("go", "run", "client.go", "-c", "-t", rareAll)
@@ -159,6 +145,13 @@ func main() {
 	parts := strings.Fields(out.String())
 	count, _ := strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareAll matches: %d\n", count)
+	if count == 10 {
+        fmt.Println("rareAll case passed")
+		passed += 1
+    } else {
+        fmt.Println("rareAll case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", rareSome)
     cmd.Stdout = &out
@@ -166,6 +159,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareSome matches: %d\n", count)
+	if count == 4 {
+        fmt.Println("rareSome case passed")
+		passed += 1
+    } else {
+        fmt.Println("rareSome case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", rareOne)
     cmd.Stdout = &out
@@ -173,6 +173,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("rareOne matches: %d\n", count)
+	if count == 1 {
+        fmt.Println("rareOne case passed")
+		passed += 1
+    } else {
+        fmt.Println("rareOne case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqAll)
     cmd.Stdout = &out
@@ -180,6 +187,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqAll matches: %d\n", count)
+	if count == 500 {
+        fmt.Println("freqAll case passed")
+		passed += 1
+    } else {
+        fmt.Println("freqAll case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqSome)
     cmd.Stdout = &out
@@ -187,6 +201,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqSome matches: %d\n", count)
+	if count == 200 {
+        fmt.Println("freqSome case passed")
+		passed += 1
+    } else {
+        fmt.Println("freqSome case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", freqOne)
     cmd.Stdout = &out
@@ -194,6 +215,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("freqOne matches: %d\n", count)
+	if count == 50 {
+        fmt.Println("freqOne case passed")
+		passed += 1
+    } else {
+        fmt.Println("freqOne case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqAll)
     cmd.Stdout = &out
@@ -201,6 +229,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqAll matches: %d\n", count)
+	if count == 100 {
+        fmt.Println("somewhatFreqAll case passed")
+		passed += 1
+    } else {
+        fmt.Println("somewhatFreqAll case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqSome)
     cmd.Stdout = &out
@@ -208,6 +243,13 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqSome matches: %d\n", count)
+	if count == 40 {
+        fmt.Println("somewhatFreqSome case passed")
+		passed += 1
+    } else {
+        fmt.Println("somewhatFreqSome case failed")
+    }
+	out.Reset()
 
 	cmd = exec.Command("go", "run", "client.go", "-c", "-t", somewhatFreqOne)
     cmd.Stdout = &out
@@ -215,24 +257,20 @@ func main() {
 	parts = strings.Fields(out.String())
 	count, _ = strconv.Atoi(parts[len(parts) - 1])
 	fmt.Printf("somewhatFreqOne matches: %d\n", count)
+	if count == 10 {
+        fmt.Println("somewhatFreqOne case passed")
+		passed += 1
+    } else {
+        fmt.Println("somewhatFreqOne case failed")
+    }
+	out.Reset()
 
-	
+	fmt.Printf("\n\n %d/11 cases passed.\n", passed)
 
-
-	// frequentAll := generateRandomWord(4)
-
-	// "vm2:8000/upload-to-test-log"
-	// vm -> write to test.log\
-
-	// -> run client
-	// -> check answers
-
-	//delete log files
-
-	// for i := 0; i < 1; i++ {
-	// 	req, _ := http.NewRequest("DELETE", machines[i] + "/delete", nil)
-	// 	client := &http.Client{}
-	// 	resp, _ := client.Do(req)
-	// 	defer resp.Body.Close()
-	// }
+	for i := 0; i < 10; i++ {
+		req, _ := http.NewRequest("DELETE", machines[i] + "/delete", nil)
+		client := &http.Client{}
+		resp, _ := client.Do(req)
+		defer resp.Body.Close()
+	}
 }
