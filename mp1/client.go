@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"net/url"
 	"sync"
 	"strconv"
 	"time"
@@ -27,6 +28,8 @@ var machines = []string{
 func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
 
+	pattern = url.QueryEscape(pattern)
+	// fmt.Printf("%s\n", pattern)
 	url := fmt.Sprintf("%s/grep?pattern=%s&options=%s", machineURL, pattern, options)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
@@ -47,6 +50,7 @@ func main() {
     }
 
     pattern := os.Args[len(os.Args)-1]
+
     options := os.Args[1 : len(os.Args)-1]
 	for _, option := range options {
         if !strings.HasPrefix(option, "-") {
