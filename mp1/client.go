@@ -25,12 +25,12 @@ var machines = []string{
 	"http://fa24-cs425-0710.cs.illinois.edu:8080",
 }
 
-func queryMachine(machineURL, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
+func queryMachine(machineURL, machineNumber, pattern, options string, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
 
 	pattern = url.QueryEscape(pattern)
 	// fmt.Printf("%s\n", pattern)
-	url := fmt.Sprintf("%s/grep?pattern=%s&options=%s", machineURL, pattern, options)
+	url := fmt.Sprintf("%s/grep?machineNumber=%s&pattern=%s&options=%s", machineURL, machineNumber, pattern, options)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -63,9 +63,9 @@ func main() {
 	results := make(chan string, len(machines)+1)
 	var wg sync.WaitGroup
 
-	for _, machine := range machines {
+	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		go queryMachine(machine, pattern, encodedOptions, &wg, results)
+		go queryMachine(machines[i], strconv.Itoa(i + 1), pattern, encodedOptions, &wg, results)
 	}
 
 	go func() {
