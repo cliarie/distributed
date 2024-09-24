@@ -1,1 +1,3 @@
 *.log
+*test.go
+*server.go
