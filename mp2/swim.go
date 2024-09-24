@@ -48,7 +48,7 @@ func ack(wg *sync.WaitGroup, addr *net.UDPAddr) {
 
 	buf := make([]byte, 1024)
 	for {
-		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		_, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			fmt.Printf("Error reading from UDP: %v\n", err)
 			return
@@ -60,7 +60,7 @@ func ack(wg *sync.WaitGroup, addr *net.UDPAddr) {
 		if err != nil {
 			fmt.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
 		} else {
-			fmt.Printf("Sent ACK to %s\n", remoteAddr.String())
+			fmt.Printf("Sending ACK to %s...\n", remoteAddr.String())
 		}
 	}
 }
@@ -76,7 +76,7 @@ func pingAddress(wg *sync.WaitGroup) {
 		address := "172.22.158.22:5000" // address will be given as an argument
 
 		// Attempt to send a ping
-		fmt.Printf("Pinging %s...\n", address)
+		fmt.Printf("Sending PING to %s...\n", address)
 
 		// Create a UDP connection
 		conn, err := net.Dial("udp", address)
@@ -100,7 +100,7 @@ func pingAddress(wg *sync.WaitGroup) {
 
 		// Read the response
 		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
+		_, err = conn.Read(buf)
 		if err != nil {
 			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
 			// ping k random addresses that we have, asking them to ping for us
