@@ -18,13 +18,13 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
+	// "math/rand"
 	"net"
 	"sync"
 	"time"
 )
 
-type member struct {
+type Member struct {
 	Address string // ip:port of the member
 	Status  string // Status of the member (ALIVE, FAILED)
 }
@@ -111,6 +111,9 @@ func pingAddress(wg *sync.WaitGroup) {
 			// indirect ACK
 			// actually, i should have a single listening goroutine which sends the recieved messages to other
 			// channels to get processesed!
+			
+			// ask 3 random addressess to ping it for us
+			// "indirect ping ??"
 		} else {
 			fmt.Printf("Received response from %s: %s\n", address, string(buf[:n]))
 		}
@@ -132,7 +135,7 @@ func main() {
 
 
 	wg.Add(1)
-	go pingRandomAddress(&wg)
+	go pingAddress(&wg)
 
 	select {}
 }
