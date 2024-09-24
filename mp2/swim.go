@@ -53,7 +53,7 @@ func ack(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			fmt.Printf("Error reading from UDP: %v\n", err)
 			return
 		}
-		fmt.Printf("Received message: %s from %s\n", string(buf[:n]), remoteAddr.String())
+		fmt.Printf("Received PING from %s\n", remoteAddr.String())
 
 		// Send ACK back to the sender
 		_, err = conn.WriteToUDP([]byte("ACK"), remoteAddr)
@@ -102,7 +102,7 @@ func pingAddress(wg *sync.WaitGroup) {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			fmt.Printf("No response from %s. Attempting indirect ping.\n", address)
+			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
 			// ping k random addresses that we have, asking them to ping for us
 			// We'll have to handle this differently in the ack. maybe smth like
 			// indirect request ip:port
@@ -115,7 +115,7 @@ func pingAddress(wg *sync.WaitGroup) {
 			// ask 3 random addressess to ping it for us
 			// "indirect ping ??"
 		} else {
-			fmt.Printf("Received response from %s: %s\n", address, string(buf[:n]))
+			fmt.Printf("Received ACK from %s\n", address)
 		}
 
 		// Sleep for 1 second before the next ping
