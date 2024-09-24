@@ -24,18 +24,13 @@ import (
 	"time"
 )
 
-var membershipList = []string{
-	"172.22.156.22:5000",
-	// "fa24-cs425-0701.cs.illinois.edu:5000",
-	// "fa24-cs425-0702.cs.illinois.edu:8080",
-	// "fa24-cs425-0703.cs.illinois.edu:8080",
-	// "fa24-cs425-0704.cs.illinois.edu:8080",
-	// "fa24-cs425-0705.cs.illinois.edu:8080",
-	// "fa24-cs425-0706.cs.illinois.edu:8080",
-	// "fa24-cs425-0707.cs.illinois.edu:8080",
-	// "fa24-cs425-0708.cs.illinois.edu:8080",
-	// "fa24-cs425-0709.cs.illinois.edu:8080",
-	// "fa24-cs425-0710.cs.illinois.edu:8080",
+type member struct {
+	Address string // ip:port of the member
+	Status  string // Status of the member (ALIVE, FAILED)
+}
+
+var membershipList = map[string]Member{
+	"172.22.158.22:5000": {Status: "ALIVE"},
 }
 
 
@@ -70,14 +65,15 @@ func ack(wg *sync.WaitGroup, addr *net.UDPAddr) {
 	}
 }
 
-// Function to ping a random address from the provided list every second
-func pingRandomAddress(wg *sync.WaitGroup, addresses []string) {
+// Function to follow ping protocol for a specific address in a single cycle
+// and implement sucess and marking the node as failed
+// A separate function will create the random permutation list every n iterations
+func pingAddress(wg *sync.WaitGroup) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
 
 	for {
 		// Choose a random address
-		randomIndex := rand.Intn(len(addresses))
-		address := addresses[randomIndex]
+		address := "172.22.158.22:5000" // address will be given as an argument
 
 		// Attempt to send a ping
 		fmt.Printf("Pinging %s...\n", address)
@@ -106,7 +102,15 @@ func pingRandomAddress(wg *sync.WaitGroup, addresses []string) {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			fmt.Printf("No response from %s: %v\n", address, err)
+			fmt.Printf("No response from %s. Attempting indirect ping.\n", address)
+			// ping k random addresses that we have, asking them to ping for us
+			// We'll have to handle this differently in the ack. maybe smth like
+			// indirect request ip:port
+			// and just parse that
+			// then it tries to ping it, and if it works send back an ACK
+			// indirect ACK
+			// actually, i should have a single listening goroutine which sends the recieved messages to other
+			// channels to get processesed!
 		} else {
 			fmt.Printf("Received response from %s: %s\n", address, string(buf[:n]))
 		}
@@ -128,7 +132,7 @@ func main() {
 
 
 	wg.Add(1)
-	go pingRandomAddress(&wg, membershipList)
+	go pingRandomAddress(&wg)
 
 	select {}
 }
