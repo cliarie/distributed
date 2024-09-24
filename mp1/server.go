@@ -22,9 +22,7 @@ func grepHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	optionArgs := strings.Fields(options)
-	fmt.Println(machineNumber)
 	filename := "vm" + machineNumber + ".log"
-	fmt.Println(filename)
 	newOptionArgs := []string{}
     for _, arg := range optionArgs {
         if arg == "-t" {
