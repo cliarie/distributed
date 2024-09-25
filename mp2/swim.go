@@ -37,6 +37,19 @@ var (
 	membershipMutex sync.Mutex // concurrent access to membership list
 )
 
+// helper function to update membership list (safely)
+func updateMemberStatus(address string, status string) {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	if member, exists := membershipList[address]; exists {
+		member.Status = status
+		fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+	} else {
+		fmt.Printf("Doesn't exist in membershipList, %s\n", address)
+	}
+}
+
 /*
 respond to direct pings and handle requests to ping other nodes on behalf of requester
 treat direct and indirect ping requests separately:
@@ -110,7 +123,10 @@ func indirectPingHandler(targetAddress string, requester string) {
 
 	if err != nil {
 		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
+		updateMemberStatus(targetAddress, "FAILED")
 	} else {
+		// ACK received, update status
+		updateMemberStatus(targetAddress, "ALIVE")
 		// ACK received, inform requester
 		requesterconn, err := net.Dial("udp", requester)
 		if err != nil {
@@ -192,12 +208,15 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			ackMutex.Lock()
 			if indirectACK {
 				fmt.Printf("Received indirect ACK for %s\n", address)
+				updateMemberStatus(address, "ALIVE")
 			} else {
 				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
+				updateMemberStatus(address, "FAILED")
 			}
 			ackMutex.Unlock()
 		} else {
 			fmt.Printf("Received ACK from %s\n", address)
+			updateMemberStatus(address, "ALIVE")
 		}
 
 		// Sleep for 1 second before the next ping
@@ -239,6 +258,9 @@ func pingSingleAddress(address string) int {
 }
 
 func getRandomAliveNode(localAddress string) string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
 	aliveNodes := []string{}
 	for address, member := range membershipList {
 		if member.Status == "ALIVE" && address != localAddress {
@@ -256,6 +278,9 @@ func getRandomAliveNode(localAddress string) string {
 }
 
 func randomKNodes(n int) []string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
 	keys := make([]string, 0, len(membershipList))
 	for key := range membershipList {
 		keys = append(keys, key)
