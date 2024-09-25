@@ -1,16 +1,13 @@
-// for now, just work on
-// starting a server with GIVEN membership list
-// only ping-ack, no piggybacking yet
+// NOTES: added piggybacking - implemented but untested
+// - for every incomiing message, itll be in the format
+//    <message>|member1|status1|incarnation1|member2|status2|incarnation2|...
+// - for outgoing messages, I tack the entire membership list on the back of it
 
-// Ping is a little more complicated
-// Ping j -> res -> complete
-// Ping j -> no res -> ask k other nodes to ping j -> if no res, then its failed
-
-// Ack is simple, just listen and ack
-
-// 2 threads, one for ack, one for general pinging process
-
-// Later on, we'll add piggybacking to every communication
+// TODO:
+// 1) test/verfiy that piggybacking works
+// 2) then set up an introducer machine, and try starting up the network without a preinitialized membership list
+// 3) add suspicion
+// and thats it i think
 
 package main
 
@@ -21,6 +18,8 @@ import (
 	"os"
 	"sync"
 	"time"
+	"strings"
+	"strconv"
 )
 
 var pingTimeout = 2 * time.Second
@@ -53,9 +52,11 @@ func updateMemberStatus(address string, status string, incarnation int) {
 			member.Status = status
 			member.Incarnation = incarnation
 			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
-		} else if incarnation == member.Incarnation && (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
-			member.Status = status
-			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+		} else if incarnation == member.Incarnation {
+			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
+				member.Status = status
+				fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+			}
 		} else {
 			fmt.Printf("Stale update for %s with older inst %d\n", address, incarnation)
 		}
@@ -102,7 +103,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 		// check if message is direct or indirect ping
 		if message == "PING" {
 			// direct message, send ACK back to sender
-			_, err = conn.WriteToUDP([]byte("ACK"), remoteAddr)
+			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("ACK")), remoteAddr)
 			if err != nil {
 				fmt.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
 			} else {
@@ -113,7 +114,9 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			targetAddress := message[5:]
 			go indirectPingHandler(targetAddress, remoteAddr.String()) // initiate go routine
 		}
-
+		
+		// TODO: try 
+		processPiggyback(message)
 	}
 }
 
@@ -130,14 +133,16 @@ func indirectPingHandler(targetAddress string, requester string) {
 	}
 	defer conn.Close()
 
-	_, err = conn.Write([]byte("PING"))
+	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
 	if err != nil {
 		fmt.Printf("Error sending PING to %s: %v", targetAddress, err)
 	}
 
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
-	_, err = conn.Read(buf)
+	n, err := conn.Read(buf)
+	processPiggyback(string(buf[:n]))
+	
 
 	if err != nil {
 		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
@@ -150,7 +155,7 @@ func indirectPingHandler(targetAddress string, requester string) {
 		}
 		defer requesterconn.Close()
 
-		_, err = requesterconn.Write([]byte("INDIRECT_ACK"))
+		_, err = requesterconn.Write([]byte(addPiggybackToMessage("INDIRECT_ACK")))
 		if err != nil {
 			fmt.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
 		} else {
@@ -173,7 +178,6 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 		if res != 0 {
 			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
 			nodesToPing := randomKAliveNodes(localAddress, 2)
-			fmt.Println(nodesToPing)
 			var indirectWg sync.WaitGroup
 			indirectACK := false
 			var ackMutex sync.Mutex // protect indirect ACK bool
@@ -190,17 +194,19 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 					// Send a request to the node to ping the targetAddress
 					// ie PING vs PING <address>
 					request := fmt.Sprintf("PING %s", address)
-					_, err = conn.Write([]byte(request))
+					_, err = conn.Write([]byte(addPiggybackToMessage(request)))
 					if err != nil {
 						return
 					}
 					// Wait for a response (ACK)
 					buf := make([]byte, 1024)
 					conn.SetReadDeadline(time.Now().Add(pingTimeout))
-					_, err = conn.Read(buf)
+					n, err := conn.Read(buf)
 					if err != nil {
 						return
 					}
+					processPiggyback(string(buf[:n]))
+					
 
 					ackMutex.Lock()
 					indirectACK = true
@@ -243,7 +249,7 @@ func pingSingleAddress(address string) int {
 	defer conn.Close()
 
 	// Send a PING message
-	_, err = conn.Write([]byte("PING"))
+	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
 	if err != nil {
 		fmt.Printf("Error sending PING to %s: %v\n", address, err)
 		return 1
@@ -254,10 +260,11 @@ func pingSingleAddress(address string) int {
 
 	// Read the response
 	buf := make([]byte, 1024)
-	_, err = conn.Read(buf)
+	n, err := conn.Read(buf)
 	if err != nil {
 		return 1
 	} else {
+		processPiggyback(string(buf[:n]))
 		return 0
 	}
 }
@@ -314,6 +321,47 @@ func randomKAliveNodes(localAddress string, n int) []string {
 	}
 
 	return selectedNodes
+}
+
+// Function to process incoming messages and extract piggyback information
+func processPiggyback(message string) {
+	// Assume message is formatted like "PING|member1|status1|incarnation1|member2|status2|incarnation2|..."
+	parts := strings.Split(message, "|")
+	if len(parts) < 4 {
+		fmt.Println("Invalid message format for piggyback.")
+		return
+	}
+
+	// Iterate over parts and update membership list
+	for i := 1; i < len(parts); i += 3 {
+		address := parts[i]
+		status := parts[i+1]
+		incarnationStr := parts[i+2]
+
+		// Parse incarnation number
+		incarnation, err := strconv.Atoi(incarnationStr)
+		if err != nil {
+			fmt.Printf("Error parsing incarnation for %s: %v\n", address, err)
+			continue
+		}
+
+		// Update membership status
+		updateMemberStatus(address, status, incarnation)
+	}
+}
+
+// Function to add the piggyback message containing the membership list to the message
+func addPiggybackToMessage(message string) string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	var piggyback strings.Builder
+	piggyback.WriteString(message)
+	for address, member := range membershipList {
+		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d", address, member.Status, member.Incarnation))
+	}
+
+	return piggyback.String()
 }
 
 func main() {
