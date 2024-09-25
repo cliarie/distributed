@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -28,7 +29,9 @@ type Member struct {
 }
 
 var membershipList = map[string]Member{
-	"172.22.158.22:5000": {Status: "ALIVE"},
+	"fa24-cs425-0701.cs.illinois.edu:8080": {Status: "ALIVE"},
+	"fa24-cs425-0702.cs.illinois.edu:8080": {Status: "ALIVE"},
+	"fa24-cs425-0703.cs.illinois.edu:8080": {Status: "ALIVE"},
 }
 
 /*
@@ -84,6 +87,8 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 sends ping to target address, reports back to requester if ACK is received
 */
 func indirectPingHandler(targetAddress string, requester string) {
+	fmt.Printf("Handling indirect PING request for target %s from requester %s\n", targetAddress, requester)
+
 	conn, err := net.Dial("udp", targetAddress)
 	if err != nil {
 		fmt.Printf("Error dialing %s: %v\n", targetAddress, err)
@@ -126,12 +131,12 @@ Function to follow ping protocol for a specific address in a single cycle
 and implement sucess and marking the node as failed
 A separate function will create the random permutation list every n iterations
 */
-func processPingCycle(wg *sync.WaitGroup) {
+func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
 
 	for {
-		// Choose a random address
-		address := "172.22.158.22:5000" // address will be given as an argument
+		// Choose a random address (unsure if we can ping already pinged address)
+		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist
 		res := pingSingleAddress(address)
 		if res != 0 {
 			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
@@ -226,6 +231,23 @@ func pingSingleAddress(address string) int {
 	}
 }
 
+func getRandomAliveNode(localAddress string) string {
+	aliveNodes := []string{}
+	for address, member := range membershipList {
+		if member.Status == "ALIVE" && address != localAddress {
+			aliveNodes = append(aliveNodes, address)
+		}
+	}
+	if len(aliveNodes) == 0 {
+		return ""
+	}
+
+	randomSource := rand.NewSource(time.Now().UnixNano())
+	rng := rand.New(randomSource)
+
+	return aliveNodes[rng.Intn(len(aliveNodes))]
+}
+
 func randomKNodes(n int) []string {
 	keys := make([]string, 0, len(membershipList))
 	for key := range membershipList {
@@ -236,11 +258,12 @@ func randomKNodes(n int) []string {
 	selectedIndices := make(map[int]struct{})
 	var selectedNodes []string
 
-	rand.Seed(time.Now().UnixNano())
+	randomSource := rand.NewSource(time.Now().UnixNano()) // rand.seed is deprecated
+	rng := rand.New(randomSource)
 
 	for len(selectedNodes) < n && len(selectedIndices) < len(keys) {
 		// Generate a random index
-		randomIndex := rand.Intn(len(keys))
+		randomIndex := rng.Intn(len(keys))
 
 		// Check if this index has already been selected
 		if _, exists := selectedIndices[randomIndex]; !exists {
@@ -256,16 +279,21 @@ func randomKNodes(n int) []string {
 
 func main() {
 	var wg sync.WaitGroup
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP("0.0.0.0"),
-		Port: 5000,
+
+	localAddress := os.Getenv("LOCAL_ADDRESS")
+	if localAddress == "" {
+		fmt.Println("set LOCAL_ADDRESS environtment variable with export LOCAL_ADDRESS=")
+		os.Exit(1)
 	}
+
+	addr, _ := net.ResolveUDPAddr("udp", localAddress)
 
 	wg.Add(1)
 	go listener(&wg, addr) // Start our ACK goroutine
 
 	wg.Add(1)
-	go processPingCycle(&wg)
+	go processPingCycle(&wg, localAddress)
 
+	wg.Wait()
 	select {}
 }
