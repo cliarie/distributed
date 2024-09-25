@@ -6,9 +6,7 @@
 // Ping j -> res -> complete
 // Ping j -> no res -> ask k other nodes to ping j -> if no res, then its failed
 
-
 // Ack is simple, just listen and ack
-
 
 // 2 threads, one for ack, one for general pinging process
 
@@ -33,8 +31,15 @@ var membershipList = map[string]Member{
 	"172.22.158.22:5000": {Status: "ALIVE"},
 }
 
-// currently this assumes all incoming UDPs are PINGs
-// but we also have to account for indirect PINGs
+/*
+respond to direct pings and handle requests to ping other nodes on behalf of requester
+treat direct and indirect ping requests separately:
+
+	direct PING format: "PING"
+		respond with "ACK" to comfirm node is alive
+	indirect PING format: "PING <target address>"
+		extract target address, then initiate indirect ping with indirect ping handler
+*/
 func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
 
@@ -49,26 +54,78 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 
 	buf := make([]byte, 1024)
 	for {
-		_, remoteAddr, err := conn.ReadFromUDP(buf)
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			fmt.Printf("Error reading from UDP: %v\n", err)
 			return
 		}
-		fmt.Printf("Received PING from %s\n", remoteAddr.String())
+		message := string(buf[:n])
+		fmt.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
 
-		// Send ACK back to the sender
-		_, err = conn.WriteToUDP([]byte("ACK"), remoteAddr)
-		if err != nil {
-			fmt.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
-		} else {
-			fmt.Printf("Sending ACK to %s...\n", remoteAddr.String())
+		// check if message is direct or indirect ping
+		if message == "PING" {
+			// direct message, send ACK back to sender
+			_, err = conn.WriteToUDP([]byte("ACK"), remoteAddr)
+			if err != nil {
+				fmt.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
+			} else {
+				fmt.Printf("Sending ACK to %s...\n", remoteAddr.String())
+			}
+		} else if len(message) > 5 && message[:4] == "PING" {
+			// indirect PING, get target address and handle with indirectPingHandler
+			targetAddress := message[5:]
+			go indirectPingHandler(targetAddress, remoteAddr.String()) // initiate go routine
 		}
+
 	}
 }
 
-// Function to follow ping protocol for a specific address in a single cycle
-// and implement sucess and marking the node as failed
-// A separate function will create the random permutation list every n iterations
+/*
+sends ping to target address, reports back to requester if ACK is received
+*/
+func indirectPingHandler(targetAddress string, requester string) {
+	conn, err := net.Dial("udp", targetAddress)
+	if err != nil {
+		fmt.Printf("Error dialing %s: %v\n", targetAddress, err)
+		return
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte("PING"))
+	if err != nil {
+		fmt.Printf("Error sending PING to %s: %v", targetAddress, err)
+	}
+
+	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = conn.Read(buf)
+
+	if err != nil {
+		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
+	} else {
+		// ACK received, inform requester
+		requesterconn, err := net.Dial("udp", requester)
+		if err != nil {
+			fmt.Printf("Error dialing requester %s: %v", requester, err)
+			return
+		}
+		defer requesterconn.Close()
+
+		_, err = requesterconn.Write([]byte("INDIRECT_ACK"))
+		if err != nil {
+			fmt.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
+		} else {
+			fmt.Printf("Send INDIRECT ACK to %s", requester)
+		}
+	}
+
+}
+
+/*
+Function to follow ping protocol for a specific address in a single cycle
+and implement sucess and marking the node as failed
+A separate function will create the random permutation list every n iterations
+*/
 func processPingCycle(wg *sync.WaitGroup) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
 
@@ -116,17 +173,17 @@ func processPingCycle(wg *sync.WaitGroup) {
 					if err != nil {
 						return
 					}
-					
+
 					// TODO: add a mutex lock for this
 					indirectACK = true
 				}(nodeAddress)
 			}
 			indirectWg.Wait()
 			if indirectACK {
-                fmt.Printf("Received indirect ACK for %s\n", address)
-            } else {
-                fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
-            }
+				fmt.Printf("Received indirect ACK for %s\n", address)
+			} else {
+				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
+			}
 		} else {
 			fmt.Printf("Received ACK from %s\n", address)
 		}
@@ -206,7 +263,6 @@ func main() {
 
 	wg.Add(1)
 	go listener(&wg, addr) // Start our ACK goroutine
-
 
 	wg.Add(1)
 	go processPingCycle(&wg)
