@@ -28,11 +28,14 @@ type Member struct {
 	Status  string // Status of the member (ALIVE, FAILED)
 }
 
-var membershipList = map[string]Member{
-	"fa24-cs425-0701.cs.illinois.edu:8080": {Status: "ALIVE"},
-	"fa24-cs425-0702.cs.illinois.edu:8080": {Status: "ALIVE"},
-	"fa24-cs425-0703.cs.illinois.edu:8080": {Status: "ALIVE"},
-}
+var (
+	membershipList = map[string]Member{
+		"fa24-cs425-0701.cs.illinois.edu:8080": {Status: "ALIVE"},
+		"fa24-cs425-0702.cs.illinois.edu:8080": {Status: "ALIVE"},
+		"fa24-cs425-0703.cs.illinois.edu:8080": {Status: "ALIVE"},
+	}
+	membershipMutex sync.Mutex // concurrent access to membership list
+)
 
 /*
 respond to direct pings and handle requests to ping other nodes on behalf of requester
@@ -153,6 +156,7 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			nodesToPing := randomKNodes(3)
 			var indirectWg sync.WaitGroup
 			indirectACK := false
+			var ackMutex sync.Mutex // protect indirect ACK bool
 			for _, nodeAddress := range nodesToPing {
 				indirectWg.Add(1)
 				go func(node string) {
@@ -164,7 +168,6 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 					}
 					defer conn.Close()
 					// Send a request to the node to ping the targetAddress
-					// TODO make listener handle for indirect ping requests
 					// ie PING vs PING <address>
 					request := fmt.Sprintf("PING %s", address)
 					_, err = conn.Write([]byte(request))
@@ -179,16 +182,20 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 						return
 					}
 
-					// TODO: add a mutex lock for this
+					ackMutex.Lock()
 					indirectACK = true
+					ackMutex.Unlock()
 				}(nodeAddress)
 			}
 			indirectWg.Wait()
+
+			ackMutex.Lock()
 			if indirectACK {
 				fmt.Printf("Received indirect ACK for %s\n", address)
 			} else {
 				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
 			}
+			ackMutex.Unlock()
 		} else {
 			fmt.Printf("Received ACK from %s\n", address)
 		}
