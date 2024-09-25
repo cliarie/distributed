@@ -24,8 +24,8 @@ import (
 )
 
 type Member struct {
-	Address string // ip:port of the member
-	Status  string // Status of the member (ALIVE, FAILED)
+	Status      string // Status of the member (ALIVE, FAILED)
+	Incarnation int    // incarnation of member
 }
 
 var (
@@ -38,15 +38,24 @@ var (
 )
 
 // helper function to update membership list (safely)
-func updateMemberStatus(address string, status string) {
+func updateMemberStatus(address string, status string, incarnation int) {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
 	if member, exists := membershipList[address]; exists {
-		member.Status = status
-		fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+		if incarnation > member.Incarnation {
+			member.Status = status
+			member.Incarnation = incarnation
+			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+		} else {
+			fmt.Printf("Stale update for %s with older inst %d\n", address, incarnation)
+		}
 	} else {
-		fmt.Printf("Doesn't exist in membershipList, %s\n", address)
+		membershipList[address] = Member{
+			Status:      status,
+			Incarnation: incarnation,
+		}
+		fmt.Printf("Added new member, %s, with incarnation %d\n", address, incarnation)
 	}
 }
 
