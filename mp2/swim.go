@@ -193,6 +193,14 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 				go func(node string) {
 					defer indirectWg.Done()
 					conn, err := net.Dial("udp", node)
+					// TODO: theres some error where if you just run a single swim.go alone
+					//    you randomly get 
+						// Sending PING to ...
+						// Error dialing : dial udp: missing address
+						// No ACK from . Attempting indirect ping.
+						// No indirect ACK for . Marking node as failed.
+						// Added new member, , with incarnation -1
+					// somehow its pinging with address ""
 					if err != nil {
 						fmt.Printf("Error dialing %s: %v\n", node, err)
 						return
