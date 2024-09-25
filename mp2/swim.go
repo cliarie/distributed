@@ -132,9 +132,11 @@ func indirectPingHandler(targetAddress string, requester string) {
 
 	if err != nil {
 		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
+		// TODO: fix with incarnation number!
 		updateMemberStatus(targetAddress, "FAILED")
 	} else {
 		// ACK received, update status
+		// TODO: fix with incarnation number!
 		updateMemberStatus(targetAddress, "ALIVE")
 		// ACK received, inform requester
 		requesterconn, err := net.Dial("udp", requester)
@@ -217,14 +219,18 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			ackMutex.Lock()
 			if indirectACK {
 				fmt.Printf("Received indirect ACK for %s\n", address)
+				// TODO: fix with incarnation number!
 				updateMemberStatus(address, "ALIVE")
 			} else {
 				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
+				// TODO: fix with incarnation number!
+
 				updateMemberStatus(address, "FAILED")
 			}
 			ackMutex.Unlock()
 		} else {
 			fmt.Printf("Received ACK from %s\n", address)
+			// TODO: fix with incarnation number!
 			updateMemberStatus(address, "ALIVE")
 		}
 
