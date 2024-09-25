@@ -49,16 +49,21 @@ func updateMemberStatus(address string, status string, incarnation int) {
 			incarnation = member.Incarnation
 		}
 		if incarnation > member.Incarnation {
-			member.Status = status
-			member.Incarnation = incarnation
-			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+			membershipList[address] = Member{
+				Status:      status,
+				Incarnation: incarnation,
+			}
+			fmt.Printf("Successfully updated %s to %s\n", address, status)
 		} else if incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
-				member.Status = status
-				fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+				membershipList[address] = Member{
+					Status:      status,
+					Incarnation: incarnation,
+				}
+				fmt.Printf("Successfully updated %s to %s\n", address, status)
 			}
 		} else {
-			fmt.Printf("Stale update for %s with older inst %d\n", address, incarnation)
+			fmt.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
 		}
 	} else {
 		membershipList[address] = Member{
@@ -67,6 +72,7 @@ func updateMemberStatus(address string, status string, incarnation int) {
 		}
 		fmt.Printf("Added new member, %s, with incarnation %d\n", address, incarnation)
 	}
+	// fmt.Printf("membership list after updating: %v\n", membershipList)
 }
 
 /*
@@ -97,7 +103,8 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			fmt.Printf("Error reading from UDP: %v\n", err)
 			return
 		}
-		message := string(buf[:n])
+		payload := string(buf[:n])
+		message := strings.Split(payload, "|")[0]
 		fmt.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
 
 		// check if message is direct or indirect ping
@@ -116,7 +123,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 		}
 		
 		// TODO: try 
-		processPiggyback(message)
+		processPiggyback(payload)
 	}
 }
 
@@ -337,6 +344,7 @@ func processPiggyback(message string) {
 		address := parts[i]
 		status := parts[i+1]
 		incarnationStr := parts[i+2]
+		fmt.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
 
 		// Parse incarnation number
 		incarnation, err := strconv.Atoi(incarnationStr)
