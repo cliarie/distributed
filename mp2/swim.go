@@ -23,6 +23,8 @@ import (
 	"time"
 )
 
+var pingTimeout = 2 * time.Second
+
 type Member struct {
 	Status      string // Status of the member (ALIVE, FAILED)
 	Incarnation int    // incarnation of member
@@ -38,14 +40,21 @@ var (
 )
 
 // helper function to update membership list (safely)
+// pass incarnation -1 when we detect a server down by ourselves
 func updateMemberStatus(address string, status string, incarnation int) {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
 	if member, exists := membershipList[address]; exists {
+		if incarnation == -1 {
+			incarnation = member.Incarnation
+		}
 		if incarnation > member.Incarnation {
 			member.Status = status
 			member.Incarnation = incarnation
+			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
+		} else if incarnation == member.Incarnation && (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
+			member.Status = status
 			fmt.Printf("Succcessfully updated %s to %s\n", address, status)
 		} else {
 			fmt.Printf("Stale update for %s with older inst %d\n", address, incarnation)
@@ -127,17 +136,12 @@ func indirectPingHandler(targetAddress string, requester string) {
 	}
 
 	buf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
 	_, err = conn.Read(buf)
 
 	if err != nil {
 		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
-		// TODO: fix with incarnation number!
-		updateMemberStatus(targetAddress, "FAILED")
 	} else {
-		// ACK received, update status
-		// TODO: fix with incarnation number!
-		updateMemberStatus(targetAddress, "ALIVE")
 		// ACK received, inform requester
 		requesterconn, err := net.Dial("udp", requester)
 		if err != nil {
@@ -153,34 +157,23 @@ func indirectPingHandler(targetAddress string, requester string) {
 			fmt.Printf("Send INDIRECT ACK to %s", requester)
 		}
 	}
-
 }
 
 /*
-Function to follow ping protocol for a specific address in a single cycle
+Function to follow ping protocol for a random target in a single cycle
 and implement sucess and marking the node as failed
-A separate function will create the random permutation list every n iterations
 */
 func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
 
 	for {
 		// Choose a random address (unsure if we can ping already pinged address)
-		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist
+		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist, besides self
 		res := pingSingleAddress(address)
 		if res != 0 {
 			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
-			// ping k random addresses that we have, asking them to ping for us
-			// We'll have to handle this differently in the ack. maybe smth like
-			// indirect request ip:port
-			// and just parse that
-			// then it tries to ping it, and if it works send back an ACK
-			// indirect ACK
-			// actually, i should have a single listening goroutine which sends the recieved messages to other
-			// channels to get processesed!
-			// ask 3 random addressess to ping it for us
-			// "indirect ping ??"
-			nodesToPing := randomKNodes(3)
+			nodesToPing := randomKAliveNodes(localAddress, 2)
+			fmt.Println(nodesToPing)
 			var indirectWg sync.WaitGroup
 			indirectACK := false
 			var ackMutex sync.Mutex // protect indirect ACK bool
@@ -203,7 +196,7 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 					}
 					// Wait for a response (ACK)
 					buf := make([]byte, 1024)
-					conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+					conn.SetReadDeadline(time.Now().Add(pingTimeout))
 					_, err = conn.Read(buf)
 					if err != nil {
 						return
@@ -219,19 +212,16 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			ackMutex.Lock()
 			if indirectACK {
 				fmt.Printf("Received indirect ACK for %s\n", address)
-				// TODO: fix with incarnation number!
-				updateMemberStatus(address, "ALIVE")
+				updateMemberStatus(address, "ALIVE", -1)
 			} else {
 				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
-				// TODO: fix with incarnation number!
-
-				updateMemberStatus(address, "FAILED")
+				updateMemberStatus(address, "FAILED", -1)
 			}
 			ackMutex.Unlock()
 		} else {
 			fmt.Printf("Received ACK from %s\n", address)
 			// TODO: fix with incarnation number!
-			updateMemberStatus(address, "ALIVE")
+			updateMemberStatus(address, "ALIVE", -1)
 		}
 
 		// Sleep for 1 second before the next ping
@@ -260,7 +250,7 @@ func pingSingleAddress(address string) int {
 	}
 
 	// Set a deadline for receiving a response
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
 
 	// Read the response
 	buf := make([]byte, 1024)
@@ -292,13 +282,15 @@ func getRandomAliveNode(localAddress string) string {
 	return aliveNodes[rng.Intn(len(aliveNodes))]
 }
 
-func randomKNodes(n int) []string {
+func randomKAliveNodes(localAddress string, n int) []string {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
-	keys := make([]string, 0, len(membershipList))
-	for key := range membershipList {
-		keys = append(keys, key)
+	aliveNodes := []string{}
+	for address, member := range membershipList {
+		if member.Status == "ALIVE" && address != localAddress {
+			aliveNodes = append(aliveNodes, address)
+		}
 	}
 
 	// Set to track selected indices
@@ -308,16 +300,16 @@ func randomKNodes(n int) []string {
 	randomSource := rand.NewSource(time.Now().UnixNano()) // rand.seed is deprecated
 	rng := rand.New(randomSource)
 
-	for len(selectedNodes) < n && len(selectedIndices) < len(keys) {
+	for len(selectedNodes) < n && len(selectedIndices) < len(aliveNodes) {
 		// Generate a random index
-		randomIndex := rng.Intn(len(keys))
+		randomIndex := rng.Intn(len(aliveNodes))
 
 		// Check if this index has already been selected
 		if _, exists := selectedIndices[randomIndex]; !exists {
 			// Mark this index as selected
 			selectedIndices[randomIndex] = struct{}{}
 			// Append the corresponding member to the selectedNodes slice
-			selectedNodes = append(selectedNodes, keys[randomIndex])
+			selectedNodes = append(selectedNodes, aliveNodes[randomIndex])
 		}
 	}
 
@@ -332,7 +324,8 @@ func main() {
 		fmt.Println("set LOCAL_ADDRESS environtment variable with export LOCAL_ADDRESS=")
 		os.Exit(1)
 	}
-
+	// delete(membershipList, localAddress)
+	
 	addr, _ := net.ResolveUDPAddr("udp", localAddress)
 
 	wg.Add(1)
