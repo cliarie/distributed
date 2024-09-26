@@ -6,8 +6,9 @@
 // - I'm not sure if we need to make it so that we only piggyback a partial membership list
 
 // TODO:
-// 1) add suspicion
-// 2) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
+// 1) add leaves?
+// 2) add suspicion
+// 3) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
 //                             marshaled (converted) into a platform-independent format.)
 // and thats it i think
 
@@ -22,7 +23,12 @@ import (
 	"time"
 	"strings"
 	"strconv"
+	"log"
+	"io"
 )
+
+
+var logger *log.Logger
 
 var pingTimeout = 2 * time.Second
 var introducerAddress = "fa24-cs425-0701.cs.illinois.edu:8080"
@@ -52,26 +58,26 @@ func updateMemberStatus(address string, status string, incarnation int) {
 				Status:      status,
 				Incarnation: incarnation,
 			}
-			fmt.Printf("Successfully updated %s to %s\n", address, status)
+			logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
 		} else if incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
 				membershipList[address] = Member{
 					Status:      status,
 					Incarnation: incarnation,
 				}
-				fmt.Printf("Successfully updated %s to %s\n", address, status)
+				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
 			}
 		} else {
-			fmt.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
+			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
 		}
 	} else {
 		membershipList[address] = Member{
 			Status:      status,
 			Incarnation: incarnation,
 		}
-		fmt.Printf("Added new member, %s, with incarnation %d\n", address, incarnation)
+		logger.Printf("JOIN: Added new member, %s, with incarnation %d\n", address, incarnation)
 	}
-	// fmt.Printf("membership list after updating: %v\n", membershipList)
+	// logger.Printf("membership list after updating: %v\n", membershipList)
 }
 
 /*
@@ -88,32 +94,32 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		fmt.Printf("Error setting up UDP listener: %v\n", err)
+		logger.Printf("Error setting up UDP listener: %v\n", err)
 		return
 	}
 	defer conn.Close() // Close the connection when done
 
-	fmt.Printf("Listening on %s\n", addr.String())
+	logger.Printf("Listening on %s\n", addr.String())
 
 	buf := make([]byte, 1024)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			fmt.Printf("Error reading from UDP: %v\n", err)
+			logger.Printf("Error reading from UDP: %v\n", err)
 			return
 		}
 		payload := string(buf[:n])
 		message := strings.Split(payload, "|")[0]
-		fmt.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
+		logger.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
 
 		// check if message is direct or indirect ping
 		if message == "PING" {
 			// direct message, send ACK back to sender
 			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("ACK")), remoteAddr)
 			if err != nil {
-				fmt.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
+				logger.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
 			} else {
-				fmt.Printf("Sending ACK to %s...\n", remoteAddr.String())
+				logger.Printf("Sending ACK to %s...\n", remoteAddr.String())
 			}
 		} else if len(message) > 5 && message[:5] == "PING " {
 			// indirect PING, get target address and handle with indirectPingHandler
@@ -125,9 +131,9 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			// piggyback membership list to sender
 			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("INFO")), remoteAddr)
 			if err != nil {
-				fmt.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
+				logger.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
 			} else {
-				fmt.Printf("Sending INFO to %s...\n", remoteAddr.String())
+				logger.Printf("Sending INFO to %s...\n", remoteAddr.String())
 			}
 		}
 		processPiggyback(payload)
@@ -138,18 +144,18 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 sends ping to target address, reports back to requester if ACK is received
 */
 func indirectPingHandler(targetAddress string, requester string) {
-	fmt.Printf("Handling indirect PING request for target %s from requester %s\n", targetAddress, requester)
+	logger.Printf("Handling indirect PING request for target %s from requester %s\n", targetAddress, requester)
 
 	conn, err := net.Dial("udp", targetAddress)
 	if err != nil {
-		fmt.Printf("Error dialing %s: %v\n", targetAddress, err)
+		logger.Printf("Error dialing %s: %v\n", targetAddress, err)
 		return
 	}
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
 	if err != nil {
-		fmt.Printf("Error sending PING to %s: %v", targetAddress, err)
+		logger.Printf("Error sending PING to %s: %v", targetAddress, err)
 	}
 
 	buf := make([]byte, 1024)
@@ -157,22 +163,22 @@ func indirectPingHandler(targetAddress string, requester string) {
 	n, err := conn.Read(buf)
 	
 	if err != nil {
-		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
+		logger.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
 	} else {
 		// ACK received, inform requester
 		processPiggyback(string(buf[:n]))
 		requesterconn, err := net.Dial("udp", requester)
 		if err != nil {
-			fmt.Printf("Error dialing requester %s: %v", requester, err)
+			logger.Printf("Error dialing requester %s: %v", requester, err)
 			return
 		}
 		defer requesterconn.Close()
 
 		_, err = requesterconn.Write([]byte(addPiggybackToMessage("INDIRECT_ACK")))
 		if err != nil {
-			fmt.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
+			logger.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
 		} else {
-			fmt.Printf("Send INDIRECT ACK to %s", requester)
+			logger.Printf("Send INDIRECT ACK to %s", requester)
 		}
 	}
 }
@@ -189,14 +195,14 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 		// Choose a random address (unsure if we can ping already pinged address)
 		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist, besides self
 		if address == "" {
-			fmt.Printf("No alive nodes.\n")
+			logger.Printf("No alive nodes.\n")
 			printMembershipList()
 			time.Sleep(1 * time.Second)
 			continue
 		}
 		res := pingSingleAddress(address)
 		if res != 0 {
-			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
+			logger.Printf("No ACK from %s. Attempting indirect ping.\n", address)
 			nodesToPing := randomKAliveNodes(localAddress, 2)
 			var indirectWg sync.WaitGroup
 			indirectACK := false
@@ -207,7 +213,7 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 					defer indirectWg.Done()
 					conn, err := net.Dial("udp", node)
 					if err != nil {
-						fmt.Printf("Error dialing %s: %v\n", node, err)
+						logger.Printf("Error dialing %s: %v\n", node, err)
 						return
 					}
 					defer conn.Close()
@@ -237,15 +243,15 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 
 			ackMutex.Lock()
 			if indirectACK {
-				fmt.Printf("Received indirect ACK for %s\n", address)
+				logger.Printf("Received indirect ACK for %s\n", address)
 				updateMemberStatus(address, "ALIVE", -1)
 			} else {
-				fmt.Printf("No indirect ACK for %s. Marking node as failed.\n", address)
+				logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as failed.\n", address)
 				updateMemberStatus(address, "FAILED", -1)
 			}
 			ackMutex.Unlock()
 		} else {
-			fmt.Printf("Received ACK from %s\n", address)
+			logger.Printf("Received ACK from %s\n", address)
 			// TODO: fix with incarnation number!
 			updateMemberStatus(address, "ALIVE", -1)
 		}
@@ -259,12 +265,12 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 // function to ping a given address, and then return 0 if recieved ACK, 1 if no ACK
 func pingSingleAddress(address string) int {
 	// Attempt to send a ping
-	fmt.Printf("Sending PING to %s...\n", address)
+	logger.Printf("Sending PING to %s...\n", address)
 
 	// Create a UDP connection
 	conn, err := net.Dial("udp", address)
 	if err != nil {
-		fmt.Printf("Error dialing %s: %v\n", address, err)
+		logger.Printf("Error dialing %s: %v\n", address, err)
 		return 1
 	}
 	defer conn.Close()
@@ -272,7 +278,7 @@ func pingSingleAddress(address string) int {
 	// Send a PING message
 	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
 	if err != nil {
-		fmt.Printf("Error sending PING to %s: %v\n", address, err)
+		logger.Printf("Error sending PING to %s: %v\n", address, err)
 		return 1
 	}
 
@@ -293,12 +299,12 @@ func pingSingleAddress(address string) int {
 // function to ping introducer for intial contact and membership list
 func pingIntroducer() int {
 	// Attempt to send a JOIN ping
-	fmt.Printf("Sending JOIN to introducer...\n")
+	logger.Printf("Sending JOIN to introducer...\n")
 
 	// Create a UDP connection
 	conn, err := net.Dial("udp", introducerAddress)
 	if err != nil {
-		fmt.Printf("Error dialing %s: %v\n", introducerAddress, err)
+		logger.Printf("Error dialing %s: %v\n", introducerAddress, err)
 		return 1
 	}
 	defer conn.Close()
@@ -306,7 +312,7 @@ func pingIntroducer() int {
 	// Send a JOIN message
 	_, err = conn.Write([]byte(addPiggybackToMessage("JOIN")))
 	if err != nil {
-		fmt.Printf("Error sending JOIN to %s: %v\n", introducerAddress, err)
+		logger.Printf("Error sending JOIN to %s: %v\n", introducerAddress, err)
 		return 1
 	}
 
@@ -328,9 +334,9 @@ func printMembershipList() {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
-	fmt.Printf("Current Membership List:\n")
+	logger.Printf("Current Membership List:\n")
 	for address, member := range membershipList {
-		fmt.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+		logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
 	}
 }
 
@@ -402,12 +408,12 @@ func processPiggyback(message string) {
 		address := parts[i]
 		status := parts[i+1]
 		incarnationStr := parts[i+2]
-		// fmt.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
+		// logger.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
 
 		// Parse incarnation number
 		incarnation, err := strconv.Atoi(incarnationStr)
 		if err != nil {
-			fmt.Printf("Error parsing incarnation for %s: %v\n", address, err)
+			logger.Printf("Error parsing incarnation for %s: %v\n", address, err)
 			continue
 		}
 
@@ -431,6 +437,7 @@ func addPiggybackToMessage(message string) string {
 }
 
 func main() {
+
 	var wg sync.WaitGroup
 
 	localAddress := os.Getenv("LOCAL_ADDRESS")
@@ -438,6 +445,14 @@ func main() {
 		fmt.Println("set LOCAL_ADDRESS environtment variable with export LOCAL_ADDRESS=")
 		os.Exit(1)
 	}
+	logFile := os.Getenv("LOGFILE")
+	if logFile == "" {
+		fmt.Println("set LOGFILE environtment variable with export LOGFILE=")
+		os.Exit(1)
+	}
+	file, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	multiWriter := io.MultiWriter(os.Stdout, file)
+	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
 
 	// No need to know whether it is introducer, because only the introducer will get 
 	// new node join requests
@@ -455,7 +470,7 @@ func main() {
 
 	if !isIntroducer {
 		for pingIntroducer() != 0 { // Ask introducer to introduce
-			fmt.Printf("Unable to contact introducer at %s, retrying...\n", introducerAddress)
+			logger.Printf("Unable to contact introducer at %s, retrying...\n", introducerAddress)
 			time.Sleep(1 * time.Second)
 		}
 	}
