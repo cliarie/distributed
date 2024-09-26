@@ -1,12 +1,14 @@
-// NOTES: added piggybacking - implemented but untested
-// - for every incomiing message, itll be in the format
+// NOTES: 
+// - finished piggybacking
+// - for every incomiing message, it'll be in the format
 //    <message>|member1|status1|incarnation1|member2|status2|incarnation2|...
 // - for outgoing messages, I tack the entire membership list on the back of it
+// - I'm not sure if we need to make it so that we only piggyback a partial membership list
 
 // TODO:
-// 1) test/verfiy that piggybacking works
-// 2) then set up an introducer machine, and try starting up the network without a preinitialized membership list
-// 3) add suspicion
+// 1) add suspicion
+// 2) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
+//                             marshaled (converted) into a platform-independent format.)
 // and thats it i think
 
 package main
@@ -23,6 +25,7 @@ import (
 )
 
 var pingTimeout = 2 * time.Second
+var introducerAddress = "fa24-cs425-0701.cs.illinois.edu:8080"
 
 type Member struct {
 	Status      string // Status of the member (ALIVE, FAILED)
@@ -30,11 +33,7 @@ type Member struct {
 }
 
 var (
-	membershipList = map[string]Member{
-		"fa24-cs425-0701.cs.illinois.edu:8080": {Status: "ALIVE"},
-		"fa24-cs425-0702.cs.illinois.edu:8080": {Status: "ALIVE"},
-		"fa24-cs425-0703.cs.illinois.edu:8080": {Status: "ALIVE"},
-	}
+	membershipList = map[string]Member{ }
 	membershipMutex sync.Mutex // concurrent access to membership list
 )
 
@@ -116,13 +115,21 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			} else {
 				fmt.Printf("Sending ACK to %s...\n", remoteAddr.String())
 			}
-		} else if len(message) > 5 && message[:4] == "PING" {
+		} else if len(message) > 5 && message[:5] == "PING " {
 			// indirect PING, get target address and handle with indirectPingHandler
 			targetAddress := message[5:]
 			go indirectPingHandler(targetAddress, remoteAddr.String()) // initiate go routine
 		}
 		
-		// TODO: try 
+		if message == "JOIN" {
+			// piggyback membership list to sender
+			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("INFO")), remoteAddr)
+			if err != nil {
+				fmt.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
+			} else {
+				fmt.Printf("Sending INFO to %s...\n", remoteAddr.String())
+			}
+		}
 		processPiggyback(payload)
 	}
 }
@@ -148,13 +155,12 @@ func indirectPingHandler(targetAddress string, requester string) {
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
 	n, err := conn.Read(buf)
-	processPiggyback(string(buf[:n]))
 	
-
 	if err != nil {
 		fmt.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
 	} else {
 		// ACK received, inform requester
+		processPiggyback(string(buf[:n]))
 		requesterconn, err := net.Dial("udp", requester)
 		if err != nil {
 			fmt.Printf("Error dialing requester %s: %v", requester, err)
@@ -177,10 +183,17 @@ and implement sucess and marking the node as failed
 */
 func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 	defer wg.Done() // Signal that this goroutine is done when it exits
+	time.Sleep(4 * time.Second)
 
 	for {
 		// Choose a random address (unsure if we can ping already pinged address)
 		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist, besides self
+		if address == "" {
+			fmt.Printf("No alive nodes.\n")
+			printMembershipList()
+			time.Sleep(1 * time.Second)
+			continue
+		}
 		res := pingSingleAddress(address)
 		if res != 0 {
 			fmt.Printf("No ACK from %s. Attempting indirect ping.\n", address)
@@ -193,14 +206,6 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 				go func(node string) {
 					defer indirectWg.Done()
 					conn, err := net.Dial("udp", node)
-					// TODO: theres some error where if you just run a single swim.go alone
-					//    you randomly get 
-						// Sending PING to ...
-						// Error dialing : dial udp: missing address
-						// No ACK from . Attempting indirect ping.
-						// No indirect ACK for . Marking node as failed.
-						// Added new member, , with incarnation -1
-					// somehow its pinging with address ""
 					if err != nil {
 						fmt.Printf("Error dialing %s: %v\n", node, err)
 						return
@@ -246,6 +251,7 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 		}
 
 		// Sleep for 1 second before the next ping
+		printMembershipList()
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -281,6 +287,50 @@ func pingSingleAddress(address string) int {
 	} else {
 		processPiggyback(string(buf[:n]))
 		return 0
+	}
+}
+
+// function to ping introducer for intial contact and membership list
+func pingIntroducer() int {
+	// Attempt to send a JOIN ping
+	fmt.Printf("Sending JOIN to introducer...\n")
+
+	// Create a UDP connection
+	conn, err := net.Dial("udp", introducerAddress)
+	if err != nil {
+		fmt.Printf("Error dialing %s: %v\n", introducerAddress, err)
+		return 1
+	}
+	defer conn.Close()
+
+	// Send a JOIN message
+	_, err = conn.Write([]byte(addPiggybackToMessage("JOIN")))
+	if err != nil {
+		fmt.Printf("Error sending JOIN to %s: %v\n", introducerAddress, err)
+		return 1
+	}
+
+	// Set a deadline for receiving a response
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
+
+	// Read the response
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return 1
+	} else {
+		processPiggyback(string(buf[:n]))
+		return 0
+	}
+}
+
+func printMembershipList() {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	fmt.Printf("Current Membership List:\n")
+	for address, member := range membershipList {
+		fmt.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
 	}
 }
 
@@ -352,7 +402,7 @@ func processPiggyback(message string) {
 		address := parts[i]
 		status := parts[i+1]
 		incarnationStr := parts[i+2]
-		fmt.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
+		// fmt.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
 
 		// Parse incarnation number
 		incarnation, err := strconv.Atoi(incarnationStr)
@@ -388,12 +438,27 @@ func main() {
 		fmt.Println("set LOCAL_ADDRESS environtment variable with export LOCAL_ADDRESS=")
 		os.Exit(1)
 	}
-	// delete(membershipList, localAddress)
+
+	// No need to know whether it is introducer, because only the introducer will get 
+	// new node join requests
+	var isIntroducer = false
+	if localAddress == introducerAddress {
+		isIntroducer = true
+	}
 	
 	addr, _ := net.ResolveUDPAddr("udp", localAddress)
 
+	updateMemberStatus(localAddress, "ALIVE", 0) // Add self to membership list
+
 	wg.Add(1)
 	go listener(&wg, addr) // Start our ACK goroutine
+
+	if !isIntroducer {
+		for pingIntroducer() != 0 { // Ask introducer to introduce
+			fmt.Printf("Unable to contact introducer at %s, retrying...\n", introducerAddress)
+			time.Sleep(1 * time.Second)
+		}
+	}
 
 	wg.Add(1)
 	go processPingCycle(&wg, localAddress)
