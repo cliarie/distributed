@@ -1,16 +1,17 @@
 // NOTES: 
-// - finished piggybacking
+// - FINISHED PIGGYBACKING
 // - for every incomiing message, it'll be in the format
 //    <message>|member1|status1|incarnation1|member2|status2|incarnation2|...
 // - for outgoing messages, I tack the entire membership list on the back of it
 // - I'm not sure if we need to make it so that we only piggyback a partial membership list
+// - FINISHED SUSPICION
 
-// TODO:
-// 1) add leaves?
-// 2) add suspicion
-// 3) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
+// https://piazza.com/class/lzapkyodcvm4t2/post/292
+// TODO: (probably like 10-30 minutes of work)
+// 1) add leaves
+// 2) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
 //                             marshaled (converted) into a platform-independent format.)
-// and thats it i think
+// and then we should probably test it with all 10 vms following the piazza demo test format
 
 package main
 
@@ -25,13 +26,9 @@ import (
 	"strconv"
 	"log"
 	"io"
+	"bufio"
 )
 
-
-var logger *log.Logger
-
-var pingTimeout = 2 * time.Second
-var introducerAddress = "fa24-cs425-0701.cs.illinois.edu:8080"
 
 type Member struct {
 	Status      string // Status of the member (ALIVE, FAILED)
@@ -43,11 +40,34 @@ var (
 	membershipMutex sync.Mutex // concurrent access to membership list
 )
 
+var logger *log.Logger
+var pingTimeout = 2 * time.Second
+var introducerAddress = "fa24-cs425-0701.cs.illinois.edu:8080"
+
+var (
+	cycle            = 0
+	timeoutCycles    = 5
+	suspicionEnabled = false
+	suspicionMap     = make(map[string]int) // maps suspected nodes to when they were suspected
+	failedMap        = make(map[string]int) // maps failed nodes to when they were failed, so we can remove them from the list after a certain number of cycles
+	suspicionMutex sync.Mutex // concurrent access to suspicionEnabled boolean, just in case since it's global
+)
+
 // helper function to update membership list (safely)
 // pass incarnation -1 when we detect a server down by ourselves
 func updateMemberStatus(address string, status string, incarnation int) {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
+
+	localAddress := os.Getenv("LOCAL_ADDRESS")
+	if address == localAddress && status != "ALIVE" {
+		membershipList[localAddress] = Member{
+			Status:      "ALIVE",
+			Incarnation: membershipList[localAddress].Incarnation + 1,
+		}
+		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[localAddress].Incarnation)
+		return
+	}
 
 	if member, exists := membershipList[address]; exists {
 		if incarnation == -1 {
@@ -65,12 +85,19 @@ func updateMemberStatus(address string, status string, incarnation int) {
 					Status:      status,
 					Incarnation: incarnation,
 				}
+				suspicionMutex.Lock()
+				if status == "SUSPECTED" {
+					suspicionMap[address] = cycle
+				} else if status == "FAILED" {
+					failedMap[address] = cycle
+				}
+				suspicionMutex.Unlock()
 				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
 			}
 		} else {
 			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
 		}
-	} else {
+	} else if status == "ALIVE" {
 		membershipList[address] = Member{
 			Status:      status,
 			Incarnation: incarnation,
@@ -110,7 +137,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 		}
 		payload := string(buf[:n])
 		message := strings.Split(payload, "|")[0]
-		logger.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
+		// logger.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
 
 		// check if message is direct or indirect ping
 		if message == "PING" {
@@ -119,7 +146,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			if err != nil {
 				logger.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
 			} else {
-				logger.Printf("Sending ACK to %s...\n", remoteAddr.String())
+				// logger.Printf("Sending ACK to %s...\n", remoteAddr.String())
 			}
 		} else if len(message) > 5 && message[:5] == "PING " {
 			// indirect PING, get target address and handle with indirectPingHandler
@@ -133,7 +160,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			if err != nil {
 				logger.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
 			} else {
-				logger.Printf("Sending INFO to %s...\n", remoteAddr.String())
+				// logger.Printf("Sending INFO to %s...\n", remoteAddr.String())
 			}
 		}
 		processPiggyback(payload)
@@ -193,10 +220,15 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 
 	for {
 		// Choose a random address (unsure if we can ping already pinged address)
+		suspicionMutex.Lock()
+		cycle += 1
+		suspicionMutex.Unlock()
+		checkForExpiredNodes()
+
 		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist, besides self
 		if address == "" {
-			logger.Printf("No alive nodes.\n")
-			printMembershipList()
+			// logger.Printf("No alive nodes.\n")
+			// printMembershipList()
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -246,26 +278,59 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 				logger.Printf("Received indirect ACK for %s\n", address)
 				updateMemberStatus(address, "ALIVE", -1)
 			} else {
-				logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as failed.\n", address)
-				updateMemberStatus(address, "FAILED", -1)
+				suspicionMutex.Lock()
+				if suspicionEnabled {
+					suspicionMutex.Unlock()
+					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", address)
+					updateMemberStatus(address, "SUSPECTED", -1)
+				} else {
+					suspicionMutex.Unlock()
+					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", address)
+					updateMemberStatus(address, "FAILED", -1)
+				}
 			}
 			ackMutex.Unlock()
 		} else {
-			logger.Printf("Received ACK from %s\n", address)
-			// TODO: fix with incarnation number!
+			// logger.Printf("Received ACK from %s\n", address)
 			updateMemberStatus(address, "ALIVE", -1)
 		}
 
 		// Sleep for 1 second before the next ping
-		printMembershipList()
+		// printMembershipList()
 		time.Sleep(1 * time.Second)
 	}
+}
+
+func checkForExpiredNodes() {
+	suspicionMutex.Lock()
+
+	for node, markedCycle := range suspicionMap {
+		// logger.Printf("markedCycle: %d, timeoutCycles: %d, currentCycle: %d\n", markedCycle, timeoutCycles, cycle)
+		if markedCycle + timeoutCycles <= cycle {
+			suspicionMutex.Unlock()
+			logger.Printf("Grace period for %s expired, marking node as FAILED\n", node)
+			updateMemberStatus(node, "FAILED", -1)
+			suspicionMutex.Lock()
+			delete(suspicionMap, node)
+		}
+	}
+
+	for node, markedCycle := range failedMap {
+		if markedCycle + timeoutCycles <= cycle {
+			membershipMutex.Lock()
+			delete(membershipList, node)
+			membershipMutex.Unlock()
+			logger.Printf("Grace period for %s expired, evicting node from membership list\n", node)
+			delete(failedMap, node)
+		}
+	}
+	suspicionMutex.Unlock()
 }
 
 // function to ping a given address, and then return 0 if recieved ACK, 1 if no ACK
 func pingSingleAddress(address string) int {
 	// Attempt to send a ping
-	logger.Printf("Sending PING to %s...\n", address)
+	// logger.Printf("Sending PING to %s...\n", address)
 
 	// Create a UDP connection
 	conn, err := net.Dial("udp", address)
@@ -330,6 +395,23 @@ func pingIntroducer() int {
 	}
 }
 
+func printSuspectedNodes() {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	logger.Printf("Suspected Nodes:\n")
+	count := 0
+	for address, member := range membershipList {
+		if member.Status == "SUSPECTED" {
+			count += 1
+			logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+		}
+	}
+	if count == 0 {
+		logger.Printf("None\n")
+	}
+}
+
 func printMembershipList() {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
@@ -338,6 +420,11 @@ func printMembershipList() {
 	for address, member := range membershipList {
 		logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
 	}
+}
+
+func printSelf() {
+	localAddress := os.Getenv("LOCAL_ADDRESS")
+	logger.Printf("self: %s\n", localAddress)
 }
 
 func getRandomAliveNode(localAddress string) string {
@@ -419,6 +506,7 @@ func processPiggyback(message string) {
 
 		// Update membership status
 		updateMemberStatus(address, status, incarnation)
+
 	}
 }
 
@@ -434,6 +522,50 @@ func addPiggybackToMessage(message string) string {
 	}
 
 	return piggyback.String()
+}
+
+func handleCLICommands(wg *sync.WaitGroup) {
+	defer wg.Done()
+
+    reader := bufio.NewReader(os.Stdin)
+    for {
+        input, _ := reader.ReadString('\n')
+        input = strings.TrimSpace(input)
+
+        // Process commands here
+        switch input {
+        case "list_mem":
+			printMembershipList()
+        case "list_self":
+			printSelf()
+        case "leave": // TODO
+			continue
+        case "enable_sus":
+			suspicionMutex.Lock()
+			suspicionEnabled = true
+			logger.Printf("Suspicion Enabled\n")
+			suspicionMutex.Unlock()
+        case "disable_sus":
+			suspicionMutex.Lock()
+			suspicionEnabled = false
+			logger.Printf("Suspicion Disabled\n")
+			suspicionMutex.Unlock()
+		case "status_sus": 
+			suspicionMutex.Lock()
+			if suspicionEnabled {
+				logger.Printf("Suspicion is enabled\n")
+			} else {
+				logger.Printf("Suspicion is disabled\n")
+			}
+			suspicionMutex.Unlock()
+        case "???": // (Mandatory, not optional) Display a suspected node immediately to stdout at the VM terminal of the suspecting node. 
+			// 
+        case "list_suspected_nodes": 
+			printSuspectedNodes()
+        default:
+            fmt.Printf("Unknown command: %s\n", input)
+        }
+    }
 }
 
 func main() {
@@ -477,6 +609,9 @@ func main() {
 
 	wg.Add(1)
 	go processPingCycle(&wg, localAddress)
+
+	wg.Add(1)
+	go handleCLICommands(&wg)
 
 	wg.Wait()
 	select {}
