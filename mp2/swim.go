@@ -1,4 +1,4 @@
-// NOTES: 
+// NOTES:
 // - FINISHED PIGGYBACKING
 // - for every incomiing message, it'll be in the format
 //    <message>|member1|status1|incarnation1|member2|status2|incarnation2|...
@@ -16,28 +16,28 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"strings"
-	"strconv"
-	"log"
-	"io"
-	"bufio"
 )
-
 
 type Member struct {
 	Status      string // Status of the member (ALIVE, FAILED)
 	Incarnation int    // incarnation of member
+	Version     int    // version (increments on each rejoin)
 }
 
 var (
-	membershipList = map[string]Member{ }
-	membershipMutex sync.Mutex // concurrent access to membership list
+	membershipList  = map[string]Member{} // key format "address"
+	membershipMutex sync.Mutex            // concurrent access to membership list
 )
 
 var logger *log.Logger
@@ -50,12 +50,12 @@ var (
 	suspicionEnabled = false
 	suspicionMap     = make(map[string]int) // maps suspected nodes to when they were suspected
 	failedMap        = make(map[string]int) // maps failed nodes to when they were failed, so we can remove them from the list after a certain number of cycles
-	suspicionMutex sync.Mutex // concurrent access to suspicionEnabled boolean, just in case since it's global
+	suspicionMutex   sync.Mutex             // concurrent access to suspicionEnabled boolean, just in case since it's global
 )
 
 // helper function to update membership list (safely)
 // pass incarnation -1 when we detect a server down by ourselves
-func updateMemberStatus(address string, status string, incarnation int) {
+func updateMemberStatus(address string, status string, incarnation int, version int) {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
@@ -64,6 +64,7 @@ func updateMemberStatus(address string, status string, incarnation int) {
 		membershipList[localAddress] = Member{
 			Status:      "ALIVE",
 			Incarnation: membershipList[localAddress].Incarnation + 1,
+			Version:     version + 1,
 		}
 		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[localAddress].Incarnation)
 		return
@@ -73,17 +74,28 @@ func updateMemberStatus(address string, status string, incarnation int) {
 		if incarnation == -1 {
 			incarnation = member.Incarnation
 		}
-		if incarnation > member.Incarnation {
+		if version > member.Version || (version == member.Version && incarnation > member.Incarnation) || status == "LEAVE" {
 			membershipList[address] = Member{
 				Status:      status,
 				Incarnation: incarnation,
+				Version:     version,
 			}
 			logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
-		} else if incarnation == member.Incarnation {
+
+			suspicionMutex.Lock()
+			if status == "SUSPECTED" {
+				suspicionMap[address] = cycle
+			} else if status == "FAILED" {
+				failedMap[address] = cycle
+			}
+			suspicionMutex.Unlock()
+
+		} else if version == member.Version && incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
 				membershipList[address] = Member{
 					Status:      status,
 					Incarnation: incarnation,
+					Version:     version,
 				}
 				suspicionMutex.Lock()
 				if status == "SUSPECTED" {
@@ -97,10 +109,11 @@ func updateMemberStatus(address string, status string, incarnation int) {
 		} else {
 			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
 		}
-	} else if status == "ALIVE" {
+	} else if status == "ALIVE" || status == "LEAVE" {
 		membershipList[address] = Member{
 			Status:      status,
 			Incarnation: incarnation,
+			Version:     version,
 		}
 		logger.Printf("JOIN: Added new member, %s, with incarnation %d\n", address, incarnation)
 	}
@@ -153,7 +166,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			targetAddress := message[5:]
 			go indirectPingHandler(targetAddress, remoteAddr.String()) // initiate go routine
 		}
-		
+
 		if message == "JOIN" {
 			// piggyback membership list to sender
 			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("INFO")), remoteAddr)
@@ -188,7 +201,7 @@ func indirectPingHandler(targetAddress string, requester string) {
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
 	n, err := conn.Read(buf)
-	
+
 	if err != nil {
 		logger.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
 	} else {
@@ -264,7 +277,6 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 						return
 					}
 					processPiggyback(string(buf[:n]))
-					
 
 					ackMutex.Lock()
 					indirectACK = true
@@ -276,23 +288,23 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			ackMutex.Lock()
 			if indirectACK {
 				logger.Printf("Received indirect ACK for %s\n", address)
-				updateMemberStatus(address, "ALIVE", -1)
+				updateMemberStatus(address, "ALIVE", -1, -1)
 			} else {
 				suspicionMutex.Lock()
 				if suspicionEnabled {
 					suspicionMutex.Unlock()
 					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", address)
-					updateMemberStatus(address, "SUSPECTED", -1)
+					updateMemberStatus(address, "SUSPECTED", -1, -1)
 				} else {
 					suspicionMutex.Unlock()
 					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", address)
-					updateMemberStatus(address, "FAILED", -1)
+					updateMemberStatus(address, "FAILED", -1, -1)
 				}
 			}
 			ackMutex.Unlock()
 		} else {
 			// logger.Printf("Received ACK from %s\n", address)
-			updateMemberStatus(address, "ALIVE", -1)
+			updateMemberStatus(address, "ALIVE", -1, -1)
 		}
 
 		// Sleep for 1 second before the next ping
@@ -306,17 +318,17 @@ func checkForExpiredNodes() {
 
 	for node, markedCycle := range suspicionMap {
 		// logger.Printf("markedCycle: %d, timeoutCycles: %d, currentCycle: %d\n", markedCycle, timeoutCycles, cycle)
-		if markedCycle + timeoutCycles <= cycle {
+		if markedCycle+timeoutCycles <= cycle {
 			suspicionMutex.Unlock()
 			logger.Printf("Grace period for %s expired, marking node as FAILED\n", node)
-			updateMemberStatus(node, "FAILED", -1)
+			updateMemberStatus(node, "FAILED", -1, -1)
 			suspicionMutex.Lock()
 			delete(suspicionMap, node)
 		}
 	}
 
 	for node, markedCycle := range failedMap {
-		if markedCycle + timeoutCycles <= cycle {
+		if markedCycle+timeoutCycles <= cycle {
 			membershipMutex.Lock()
 			delete(membershipList, node)
 			membershipMutex.Unlock()
@@ -485,16 +497,17 @@ func randomKAliveNodes(localAddress string, n int) []string {
 func processPiggyback(message string) {
 	// Assume message is formatted like "PING|member1|status1|incarnation1|member2|status2|incarnation2|..."
 	parts := strings.Split(message, "|")
-	if len(parts) < 4 {
+	if len(parts) < 5 {
 		fmt.Println("Invalid message format for piggyback.")
 		return
 	}
 
 	// Iterate over parts and update membership list
-	for i := 1; i < len(parts); i += 3 {
+	for i := 1; i < len(parts); i += 4 {
 		address := parts[i]
 		status := parts[i+1]
 		incarnationStr := parts[i+2]
+		versionStr := parts[i+3]
 		// logger.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
 
 		// Parse incarnation number
@@ -504,8 +517,13 @@ func processPiggyback(message string) {
 			continue
 		}
 
+		version, err := strconv.Atoi(versionStr)
+		if err != nil {
+			logger.Printf("Error parsing version for %s: %v\n", address, err)
+		}
+
 		// Update membership status
-		updateMemberStatus(address, status, incarnation)
+		updateMemberStatus(address, status, incarnation, version)
 
 	}
 }
@@ -527,30 +545,30 @@ func addPiggybackToMessage(message string) string {
 func handleCLICommands(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-    reader := bufio.NewReader(os.Stdin)
-    for {
-        input, _ := reader.ReadString('\n')
-        input = strings.TrimSpace(input)
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
 
-        // Process commands here
-        switch input {
-        case "list_mem":
+		// Process commands here
+		switch input {
+		case "list_mem":
 			printMembershipList()
-        case "list_self":
+		case "list_self":
 			printSelf()
-        case "leave": // TODO
+		case "leave": // TODO
 			continue
-        case "enable_sus":
+		case "enable_sus":
 			suspicionMutex.Lock()
 			suspicionEnabled = true
 			logger.Printf("Suspicion Enabled\n")
 			suspicionMutex.Unlock()
-        case "disable_sus":
+		case "disable_sus":
 			suspicionMutex.Lock()
 			suspicionEnabled = false
 			logger.Printf("Suspicion Disabled\n")
 			suspicionMutex.Unlock()
-		case "status_sus": 
+		case "status_sus":
 			suspicionMutex.Lock()
 			if suspicionEnabled {
 				logger.Printf("Suspicion is enabled\n")
@@ -558,14 +576,14 @@ func handleCLICommands(wg *sync.WaitGroup) {
 				logger.Printf("Suspicion is disabled\n")
 			}
 			suspicionMutex.Unlock()
-        case "???": // (Mandatory, not optional) Display a suspected node immediately to stdout at the VM terminal of the suspecting node. 
-			// 
-        case "list_suspected_nodes": 
+		case "???": // (Mandatory, not optional) Display a suspected node immediately to stdout at the VM terminal of the suspecting node.
+			//
+		case "list_suspected_nodes":
 			printSuspectedNodes()
-        default:
-            fmt.Printf("Unknown command: %s\n", input)
-        }
-    }
+		default:
+			fmt.Printf("Unknown command: %s\n", input)
+		}
+	}
 }
 
 func main() {
@@ -586,16 +604,16 @@ func main() {
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
 
-	// No need to know whether it is introducer, because only the introducer will get 
+	// No need to know whether it is introducer, because only the introducer will get
 	// new node join requests
 	var isIntroducer = false
 	if localAddress == introducerAddress {
 		isIntroducer = true
 	}
-	
+
 	addr, _ := net.ResolveUDPAddr("udp", localAddress)
 
-	updateMemberStatus(localAddress, "ALIVE", 0) // Add self to membership list
+	updateMemberStatus(localAddress, "ALIVE", 0, 0) // Add self to membership list
 
 	wg.Add(1)
 	go listener(&wg, addr) // Start our ACK goroutine
