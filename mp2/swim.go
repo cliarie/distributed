@@ -15,6 +15,7 @@
 package main
 
 import (
+	"io/ioutil"
 	"bufio"
 	"fmt"
 	"io"
@@ -31,7 +32,6 @@ import (
 type Member struct {
 	Status      string // Status of the member (ALIVE, FAILED)
 	Incarnation int    // incarnation of member
-	Version     int    // version (increments on each rejoin)
 }
 
 var (
@@ -54,92 +54,79 @@ var (
 	dropRateMutex    sync.Mutex             // Mutex to protect access to messageDropRate
 )
 
+var (
+	localIdMutex     sync.Mutex
+	localId          = ""
+)
+
 // helper function to update membership list (safely)
 // pass incarnation -1 when we detect a server down by ourselves
-func updateMemberStatus(address string, status string, incarnation int, version int) {
+func updateMemberStatus(id string, status string, incarnation int) {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
-
-	localAddress := os.Getenv("LOCAL_ADDRESS")
-	if address == localAddress && status != "ALIVE" {
-		membershipList[localAddress] = Member{
+	
+	if id == getLocalId() && status != "ALIVE" {
+		membershipList[id] = Member{
 			Status:      "ALIVE",
-			Incarnation: membershipList[localAddress].Incarnation + 1,
-			Version:     membershipList[localAddress].Version, // retain version on rejoin after leave
+			Incarnation: membershipList[id].Incarnation + 1,
 		}
-		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[localAddress].Incarnation)
+		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[id].Incarnation)
 		return
 	}
 
-	if member, exists := membershipList[address]; exists {
+	if member, exists := membershipList[id]; exists {
 		if incarnation == -1 {
 			incarnation = member.Incarnation
 		}
-		if version == -1 {
-			version = member.Version
-		}
-		if version > member.Version || (version == member.Version && incarnation > member.Incarnation) || status == "LEAVE" {
-			// Update member if the incoming version is higher or the same version but newer incarnation or the status is LEAVE
-			// Leave case: Do not change version if node rejoins after LEAVE
-			if status == "ALIVE" && member.Status == "LEAVE" {
-				membershipList[address] = Member{
-					Status:      "ALIVE",
-					Incarnation: incarnation,
-					Version:     version, // Version remains the same on rejoin after leave
-				}
-				logger.Printf("UPDATE: Node %s rejoined after LEAVE. Incarnation: %d, Version: %d\n", address, incarnation, version)
-			} else if status == "ALIVE" && member.Status == "FAILED" {
-				membershipList[address] = Member{
-					Status:      "ALIVE",
-					Incarnation: incarnation,
-					Version:     version + 1, // Increment version on rejoin after failure
-				}
-				logger.Printf("UPDATE: Node %s rejoined after FAILURE. Incarnation: %d, Version: %d\n", address, incarnation, version+1)
-			} else if status != member.Status {
-				membershipList[address] = Member{
-					Status:      status,
-					Incarnation: incarnation,
-					Version:     version,
-				}
-				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
-
-				suspicionMutex.Lock()
-				if status == "SUSPECTED" {
-					suspicionMap[address] = cycle
-				} else if status == "FAILED" {
-					failedMap[address] = cycle
-				}
-				suspicionMutex.Unlock()
+		if status == "LEAVE" {
+			membershipList[id] = Member{
+				Status:      status,
+				Incarnation: incarnation,
 			}
-		} else if version == member.Version && incarnation == member.Incarnation {
+			logger.Printf("LEAVE: %s has left the group.\n", id)
+			return
+		}
+		if member.Status == "LEAVE" {
+			return
+		}
+		if incarnation > member.Incarnation {
+			membershipList[id] = Member{
+				Status:      status,
+				Incarnation: incarnation,
+			}
+			logger.Printf("UPDATE: Successfully updated %s to %s\n", id, status)
+		} else if incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
-				membershipList[address] = Member{
+				membershipList[id] = Member{
 					Status:      status,
 					Incarnation: incarnation,
-					Version:     version,
 				}
 				suspicionMutex.Lock()
 				if status == "SUSPECTED" {
-					suspicionMap[address] = cycle
+					suspicionMap[id] = cycle
 				} else if status == "FAILED" {
-					failedMap[address] = cycle
+					failedMap[id] = cycle
 				}
 				suspicionMutex.Unlock()
-				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
+				logger.Printf("UPDATE: Successfully updated %s to %s\n", id, status)
 			}
 		} else {
-			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
+			logger.Printf("Stale update for %s with older incarnation %d\n", id, incarnation)
 		}
-	} else if status == "ALIVE" || status == "LEAVE" {
-		membershipList[address] = Member{
+	} else if status == "ALIVE" {
+		membershipList[id] = Member{
 			Status:      status,
 			Incarnation: incarnation,
-			Version:     version,
 		}
-		logger.Printf("JOIN: Added new member, %s, with incarnation %d\n", address, incarnation)
+		logger.Printf("JOIN: Added new member, %s, with incarnation %d\n", id, incarnation)
 	}
 	// logger.Printf("membership list after updating: %v\n", membershipList)
 }
+
+func getAddressFromId(id string) string {
+	return strings.Split(id, "`")[0]
+}
+
 
 /*
 handle leave will
@@ -148,16 +135,16 @@ handle leave will
 3. remove node from membership list after some time
 */
 func handleLeave() {
-	localAddress := os.Getenv("LOCAL_ADDRESS")
 	membershipMutex.Lock()
-	if member, exists := membershipList[localAddress]; exists {
+	if member, exists := membershipList[getLocalId()]; exists {
 		member.Status = "LEAVE"
-		membershipList[localAddress] = member
+		membershipList[getLocalId()] = member
 	}
 	membershipMutex.Unlock()
 
-	for address := range membershipList {
-		if address != localAddress {
+	for id := range membershipList {
+		if id != getLocalId() {
+			address := getAddressFromId(id)
 			conn, err := net.Dial("udp", address)
 			if err != nil {
 				logger.Printf("Error dialing %s: %v\n", address, err)
@@ -174,7 +161,7 @@ func handleLeave() {
 	}
 
 	time.Sleep(time.Duration(timeoutCycles) * time.Second)
-	logger.Printf("LEAVE: Node %s has left the group. \n", localAddress)
+	logger.Printf("LEAVE: Node %s has left the group. \n", getLocalId())
 	os.Exit(0) // exit the program
 }
 
@@ -304,40 +291,27 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 		suspicionMutex.Unlock()
 		checkForExpiredNodes()
 
-		address := getRandomAliveNode(localAddress) // address selected randomly from membershiplist, besides self
-		if address == "" {
+		id := getRandomAliveNode() // address selected randomly from membershiplist, besides self
+		if id == "" {
 			// logger.Printf("No alive nodes.\n")
 			// printMembershipList()
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		var currentIncarnation, currentVersion int
-
-		membershipMutex.Lock()
-		currentMember, exists := membershipList[address]
-		membershipMutex.Unlock()
-
-		if exists {
-			currentIncarnation = currentMember.Incarnation
-			currentVersion = currentMember.Version
-		} else {
-			currentIncarnation = 0
-			currentVersion = 0
-		}
-
-		res := pingSingleAddress(address)
+		res := pingSingleAddress(id)
 		if res != 0 {
-			logger.Printf("No ACK from %s. Attempting indirect ping.\n", address)
-			nodesToPing := randomKAliveNodes(localAddress, 2)
+			logger.Printf("No ACK from %s. Attempting indirect ping.\n", id)
+			nodesToPing := randomKAliveNodes(2)
 			var indirectWg sync.WaitGroup
 			indirectACK := false
 			var ackMutex sync.Mutex // protect indirect ACK bool
 			for _, nodeAddress := range nodesToPing {
 				indirectWg.Add(1)
 				go func(node string) {
+					address := getAddressFromId(node)
 					defer indirectWg.Done()
-					conn, err := net.Dial("udp", node)
+					conn, err := net.Dial("udp", address)
 					if err != nil {
 						logger.Printf("Error dialing %s: %v\n", node, err)
 						return
@@ -368,24 +342,24 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 
 			ackMutex.Lock()
 			if indirectACK {
-				logger.Printf("Received indirect ACK for %s\n", address)
-				updateMemberStatus(address, "ALIVE", currentIncarnation, currentVersion)
+				logger.Printf("Received indirect ACK for %s\n", id)
+				updateMemberStatus(id, "ALIVE", -1)
 			} else {
 				suspicionMutex.Lock()
 				if suspicionEnabled {
 					suspicionMutex.Unlock()
-					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", address)
-					updateMemberStatus(address, "SUSPECTED", currentIncarnation, currentVersion)
+					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", id)
+					updateMemberStatus(id, "SUSPECTED", -1)
 				} else {
 					suspicionMutex.Unlock()
-					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", address)
-					updateMemberStatus(address, "FAILED", currentIncarnation, currentVersion)
+					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", id)
+					updateMemberStatus(id, "FAILED", -1)
 				}
 			}
 			ackMutex.Unlock()
 		} else {
 			// logger.Printf("Received ACK from %s\n", address)
-			updateMemberStatus(address, "ALIVE", currentIncarnation, currentVersion)
+			updateMemberStatus(id, "ALIVE", -1)
 		}
 
 		// Sleep for 1 second before the next ping
@@ -402,7 +376,7 @@ func checkForExpiredNodes() {
 		if markedCycle+timeoutCycles <= cycle {
 			suspicionMutex.Unlock()
 			logger.Printf("Grace period for %s expired, marking node as FAILED\n", node)
-			updateMemberStatus(node, "FAILED", -1, -1)
+			updateMemberStatus(node, "FAILED", -1)
 			suspicionMutex.Lock()
 			delete(suspicionMap, node)
 		}
@@ -411,7 +385,7 @@ func checkForExpiredNodes() {
 	for node, markedCycle := range failedMap {
 		if markedCycle+timeoutCycles <= cycle {
 			membershipMutex.Lock()
-			// delete(membershipList, node)
+			delete(membershipList, node)
 			membershipMutex.Unlock()
 			logger.Printf("Grace period for %s expired, evicting node from membership list\n", node)
 			delete(failedMap, node)
@@ -421,9 +395,10 @@ func checkForExpiredNodes() {
 }
 
 // function to ping a given address, and then return 0 if recieved ACK, 1 if no ACK
-func pingSingleAddress(address string) int {
+func pingSingleAddress(id string) int {
 	// Attempt to send a ping
 	// logger.Printf("Sending PING to %s...\n", address)
+	address := getAddressFromId(id)
 
 	// Create a UDP connection
 	conn, err := net.Dial("udp", address)
@@ -507,7 +482,7 @@ func printSuspectedNodes() {
 	for address, member := range membershipList {
 		if member.Status == "SUSPECTED" {
 			count += 1
-			logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
+			logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
 		}
 	}
 	if count == 0 {
@@ -521,25 +496,22 @@ func printMembershipList() {
 
 	logger.Printf("Current Membership List:\n")
 	for address, member := range membershipList {
-		if member.Status != "FAILED" {
-			logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
-		}
+		logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
 	}
 }
 
 func printSelf() {
-	localAddress := os.Getenv("LOCAL_ADDRESS")
-	logger.Printf("self: %s\n", localAddress)
+	logger.Printf("self: %s\n", getLocalId())
 }
 
-func getRandomAliveNode(localAddress string) string {
+func getRandomAliveNode() string {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
 	aliveNodes := []string{}
-	for address, member := range membershipList {
-		if member.Status == "ALIVE" && address != localAddress {
-			aliveNodes = append(aliveNodes, address)
+	for id, member := range membershipList {
+		if member.Status == "ALIVE" && id != getLocalId() {
+			aliveNodes = append(aliveNodes, id)
 		}
 	}
 	if len(aliveNodes) == 0 {
@@ -552,14 +524,14 @@ func getRandomAliveNode(localAddress string) string {
 	return aliveNodes[rng.Intn(len(aliveNodes))]
 }
 
-func randomKAliveNodes(localAddress string, n int) []string {
+func randomKAliveNodes(n int) []string {
 	membershipMutex.Lock()
 	defer membershipMutex.Unlock()
 
 	aliveNodes := []string{}
-	for address, member := range membershipList {
-		if member.Status == "ALIVE" && address != localAddress {
-			aliveNodes = append(aliveNodes, address)
+	for id, member := range membershipList {
+		if member.Status == "ALIVE" && id != getLocalId() {
+			aliveNodes = append(aliveNodes, id)
 		}
 	}
 
@@ -599,39 +571,33 @@ func shouldDropMessage() bool {
 
 // Function to process incoming messages and extract piggyback information
 func processPiggyback(message string) {
-	// Assume message is formatted like "PING|member1|status1|incarnation1|version1|member2|status2|incarnation2|version2|..."
-
+	// Assume message is formatted like "PING|id|member1|status1|incarnation1|member2|status2|incarnation2|..."
 	parts := strings.Split(message, "|")
-	if len(parts) < 5 {
+	if len(parts) < 4 {
 		fmt.Println("Invalid message format for piggyback.")
 		return
 	}
 
 	// Iterate over parts and update membership list
-	for i := 1; i < len(parts); i += 4 {
-		address := parts[i]
+	for i := 1; i < len(parts); i += 3 {
+		id := parts[i]
 		status := parts[i+1]
 		incarnationStr := parts[i+2]
-		versionStr := parts[i+3]
 		// logger.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
 
 		// Parse incarnation number
 		incarnation, err := strconv.Atoi(incarnationStr)
 		if err != nil {
-			logger.Printf("Error parsing incarnation for %s: %v\n", address, err)
+			logger.Printf("Error parsing incarnation for %s: %v\n", id, err)
 			continue
 		}
 
-		version, err := strconv.Atoi(versionStr)
-		if err != nil {
-			logger.Printf("Error parsing version for %s: %v\n", address, err)
-		}
-
 		// Update membership status
-		updateMemberStatus(address, status, incarnation, version)
+		updateMemberStatus(id, status, incarnation)
 
 	}
 }
+
 
 // Function to add the piggyback message containing the membership list to the message
 func addPiggybackToMessage(message string) string {
@@ -641,11 +607,12 @@ func addPiggybackToMessage(message string) string {
 	var piggyback strings.Builder
 	piggyback.WriteString(message)
 	for address, member := range membershipList {
-		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d|%d", address, member.Status, member.Incarnation, member.Version))
+		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d", address, member.Status, member.Incarnation))
 	}
 
 	return piggyback.String()
 }
+
 
 func handleCLICommands(wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -708,6 +675,13 @@ func handleCLICommands(wg *sync.WaitGroup) {
 	}
 }
 
+func getLocalId() string {
+	localIdMutex.Lock()
+	defer localIdMutex.Unlock()
+
+	return localId
+}
+
 func main() {
 
 	var wg sync.WaitGroup
@@ -726,6 +700,16 @@ func main() {
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
 
+
+	const versionFile = "version.txt"
+	versionNumber := 0
+	data, _ := ioutil.ReadFile(versionFile)
+	if data != nil {
+		versionNumber, _ = strconv.Atoi(string(data))
+		versionNumber++ // Increment the version number
+	}
+	ioutil.WriteFile(versionFile, []byte(strconv.Itoa(versionNumber)), 0644)
+
 	// No need to know whether it is introducer, because only the introducer will get
 	// new node join requests
 	var isIntroducer = false
@@ -735,7 +719,11 @@ func main() {
 
 	addr, _ := net.ResolveUDPAddr("udp", localAddress)
 
-	updateMemberStatus(localAddress, "ALIVE", 0, 0) // Add self to membership list
+	localIdMutex.Lock()
+	localId = localAddress + "`" + strconv.Itoa(versionNumber)
+	localIdMutex.Unlock()
+	
+	updateMemberStatus(getLocalId(), "ALIVE", 0) // Add self to membership list
 
 	wg.Add(1)
 	go listener(&wg, addr) // Start our ACK goroutine
