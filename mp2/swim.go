@@ -485,7 +485,7 @@ func printMembershipList() {
 
 	logger.Printf("Current Membership List:\n")
 	for address, member := range membershipList {
-		logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+		logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
 	}
 }
 
