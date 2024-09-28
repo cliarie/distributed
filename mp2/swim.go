@@ -51,6 +51,8 @@ var (
 	suspicionMap     = make(map[string]int) // maps suspected nodes to when they were suspected
 	failedMap        = make(map[string]int) // maps failed nodes to when they were failed, so we can remove them from the list after a certain number of cycles
 	suspicionMutex   sync.Mutex             // concurrent access to suspicionEnabled boolean, just in case since it's global
+	messageDropRate  = 0                    // Message drop rate (percentage from 0 to 100)
+	dropRateMutex    sync.Mutex             // Mutex to protect access to messageDropRate
 )
 
 // helper function to update membership list (safely)
@@ -212,6 +214,10 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 		// check if message is direct or indirect ping
 		if message == "PING" {
 			// direct message, send ACK back to sender
+			if shouldDropMessage() {
+				logger.Printf("Dropping message to %s (PING)\n", remoteAddr.String())
+				continue
+			}
 			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("ACK")), remoteAddr)
 			if err != nil {
 				logger.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
@@ -226,6 +232,10 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 
 		if message == "JOIN" {
 			// piggyback membership list to sender
+			if shouldDropMessage() {
+				logger.Printf("Dropping message to %s (JOIN)\n", remoteAddr.String())
+				continue
+			}
 			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("INFO")), remoteAddr)
 			if err != nil {
 				logger.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
@@ -424,6 +434,11 @@ func pingSingleAddress(address string) int {
 	}
 	defer conn.Close()
 
+	if shouldDropMessage() {
+		logger.Printf("Dropping PING to %s\n", address)
+		return 1
+	}
+
 	// Send a PING message
 	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
 	if err != nil {
@@ -457,6 +472,11 @@ func pingIntroducer() int {
 		return 1
 	}
 	defer conn.Close()
+
+	if shouldDropMessage() {
+		logger.Printf("Dropping JOIN to %s\n", introducerAddress)
+		return 1
+	}
 
 	// Send a JOIN message
 	_, err = conn.Write([]byte(addPiggybackToMessage("JOIN")))
@@ -565,6 +585,17 @@ func randomKAliveNodes(localAddress string, n int) []string {
 	return selectedNodes
 }
 
+// Function to determine if a message should be dropped based on the drop rate
+func shouldDropMessage() bool {
+	dropRateMutex.Lock()
+	defer dropRateMutex.Unlock()
+
+	if messageDropRate == 0 {
+		return false
+	}
+	return rand.Intn(100) < messageDropRate
+}
+
 // Function to process incoming messages and extract piggyback information
 func processPiggyback(message string) {
 	// Assume message is formatted like "PING|member1|status1|incarnation1|version1|member2|status2|incarnation2|version2|..."
@@ -653,6 +684,23 @@ func handleCLICommands(wg *sync.WaitGroup) {
 			//
 		case "list_suspected_nodes":
 			printSuspectedNodes()
+		case "drop_rate":
+			dropRateMutex.Lock()
+			logger.Printf("Current message drop rate: %d%%\n", messageDropRate)
+			dropRateMutex.Unlock()
+		case "set_drop_rate":
+			fmt.Println("Enter new drop rate (0-100):")
+			rateInput, _ := reader.ReadString('\n')
+			rateInput = strings.TrimSpace(rateInput)
+			newRate, err := strconv.Atoi(rateInput)
+			if err != nil || newRate < 0 || newRate > 100 {
+				fmt.Println("Invalid drop rate. Please enter a value between 0 and 100.")
+			} else {
+				dropRateMutex.Lock()
+				messageDropRate = newRate
+				dropRateMutex.Unlock()
+				logger.Printf("Message drop rate set to: %d%%\n", newRate)
+			}
 		default:
 			fmt.Printf("Unknown command: %s\n", input)
 		}
