@@ -74,6 +74,9 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 		if incarnation == -1 {
 			incarnation = member.Incarnation
 		}
+		if version == -1 {
+			version = member.Version
+		}
 		if version > member.Version || (version == member.Version && incarnation > member.Incarnation) || status == "LEAVE" {
 			membershipList[address] = Member{
 				Status:      status,
@@ -282,6 +285,21 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			time.Sleep(1 * time.Second)
 			continue
 		}
+
+		var currentIncarnation, currentVersion int
+
+		membershipMutex.Lock()
+		currentMember, exists := membershipList[address]
+		membershipMutex.Unlock()
+
+		if exists {
+			currentIncarnation = currentMember.Incarnation
+			currentVersion = currentMember.Version
+		} else {
+			currentIncarnation = 0
+			currentVersion = 0
+		}
+
 		res := pingSingleAddress(address)
 		if res != 0 {
 			logger.Printf("No ACK from %s. Attempting indirect ping.\n", address)
@@ -325,23 +343,23 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 			ackMutex.Lock()
 			if indirectACK {
 				logger.Printf("Received indirect ACK for %s\n", address)
-				updateMemberStatus(address, "ALIVE", -1, -1)
+				updateMemberStatus(address, "ALIVE", currentIncarnation, currentVersion)
 			} else {
 				suspicionMutex.Lock()
 				if suspicionEnabled {
 					suspicionMutex.Unlock()
 					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", address)
-					updateMemberStatus(address, "SUSPECTED", -1, -1)
+					updateMemberStatus(address, "SUSPECTED", currentIncarnation, currentVersion)
 				} else {
 					suspicionMutex.Unlock()
 					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", address)
-					updateMemberStatus(address, "FAILED", -1, -1)
+					updateMemberStatus(address, "FAILED", currentIncarnation, currentVersion)
 				}
 			}
 			ackMutex.Unlock()
 		} else {
 			// logger.Printf("Received ACK from %s\n", address)
-			updateMemberStatus(address, "ALIVE", -1, -1)
+			updateMemberStatus(address, "ALIVE", currentIncarnation, currentVersion)
 		}
 
 		// Sleep for 1 second before the next ping
@@ -532,7 +550,8 @@ func randomKAliveNodes(localAddress string, n int) []string {
 
 // Function to process incoming messages and extract piggyback information
 func processPiggyback(message string) {
-	// Assume message is formatted like "PING|member1|status1|incarnation1|member2|status2|incarnation2|..."
+	// Assume message is formatted like "PING|member1|status1|incarnation1|version1|member2|status2|incarnation2|version2|..."
+
 	parts := strings.Split(message, "|")
 	if len(parts) < 5 {
 		fmt.Println("Invalid message format for piggyback.")
