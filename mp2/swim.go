@@ -8,7 +8,6 @@
 
 // https://piazza.com/class/lzapkyodcvm4t2/post/292
 // TODO: (probably like 10-30 minutes of work)
-// 1) add leaves
 // 2) add/verify marshalling (Ensure that any platform-dependent fields (e.g., ints) are
 //                             marshaled (converted) into a platform-independent format.)
 // and then we should probably test it with all 10 vms following the piazza demo test format
@@ -96,7 +95,7 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 					Version:     version + 1, // Increment version on rejoin after failure
 				}
 				logger.Printf("UPDATE: Node %s rejoined after FAILURE. Incarnation: %d, Version: %d\n", address, incarnation, version+1)
-			} else {
+			} else if status != member.Status {
 				membershipList[address] = Member{
 					Status:      status,
 					Incarnation: incarnation,
@@ -522,7 +521,9 @@ func printMembershipList() {
 
 	logger.Printf("Current Membership List:\n")
 	for address, member := range membershipList {
-		logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
+		if member.Status != "FAILED" {
+			logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
+		}
 	}
 }
 
