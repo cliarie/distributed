@@ -121,6 +121,43 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 }
 
 /*
+handle leave will
+1. update node's status to LEAVE
+2. broadcast the LEAVE status to all nodes
+3. remove node from membership list after some time
+*/
+func handleLeave() {
+	localAddress := os.Getenv("LOCAL_ADDRESS")
+	membershipMutex.Lock()
+	if member, exists := membershipList[localAddress]; exists {
+		member.Status = "LEAVE"
+		membershipList[localAddress] = member
+	}
+	membershipMutex.Unlock()
+
+	for address := range membershipList {
+		if address != localAddress {
+			conn, err := net.Dial("udp", address)
+			if err != nil {
+				logger.Printf("Error dialing %s: %v\n", address, err)
+				continue
+			}
+			defer conn.Close()
+
+			// send leave message
+			_, err = conn.Write([]byte(addPiggybackToMessage("LEAVE")))
+			if err != nil {
+				logger.Printf("Error sending LEAVE to %s: %v\n", address, err)
+			}
+		}
+	}
+
+	time.Sleep(time.Duration(timeoutCycles) * time.Second)
+	logger.Printf("LEAVE: Node %s has left the group. \n", localAddress)
+	os.Exit(0) // exit the program
+}
+
+/*
 respond to direct pings and handle requests to ping other nodes on behalf of requester
 treat direct and indirect ping requests separately:
 
@@ -536,7 +573,7 @@ func addPiggybackToMessage(message string) string {
 	var piggyback strings.Builder
 	piggyback.WriteString(message)
 	for address, member := range membershipList {
-		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d", address, member.Status, member.Incarnation))
+		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d|%d", address, member.Status, member.Incarnation, member.Version))
 	}
 
 	return piggyback.String()
@@ -556,8 +593,8 @@ func handleCLICommands(wg *sync.WaitGroup) {
 			printMembershipList()
 		case "list_self":
 			printSelf()
-		case "leave": // TODO
-			continue
+		case "leave":
+			handleLeave()
 		case "enable_sus":
 			suspicionMutex.Lock()
 			suspicionEnabled = true
