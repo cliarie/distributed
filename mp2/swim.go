@@ -103,7 +103,7 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 			}
 			suspicionMutex.Unlock()
 
-		} else if version == member.Version && incarnation == member.Incarnation && member.Status != status {
+		} else if version == member.Version && incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
 				membershipList[address] = Member{
 					Status:      status,
