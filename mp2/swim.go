@@ -64,7 +64,7 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 		membershipList[localAddress] = Member{
 			Status:      "ALIVE",
 			Incarnation: membershipList[localAddress].Incarnation + 1,
-			Version:     version + 1,
+			Version:     membershipList[localAddress].Version, // retain version on rejoin after leave
 		}
 		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[localAddress].Incarnation)
 		return
@@ -78,12 +78,22 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 			version = member.Version
 		}
 		if version > member.Version || (version == member.Version && incarnation > member.Incarnation) || status == "LEAVE" {
-			membershipList[address] = Member{
-				Status:      status,
-				Incarnation: incarnation,
-				Version:     version,
+			// When a member rejoins after leaving, retain the version, update status and incarnation.
+			if status == "LEAVE" {
+				member.Status = status
+				member.Incarnation = incarnation
+				// Do not increment version on leave, only on failure
+			} else if status == "FAILED" {
+				member.Status = status
+				member.Incarnation = incarnation
+				member.Version++
+			} else {
+				member.Status = status
+				member.Incarnation = incarnation
+				member.Version = version
 			}
-			logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
+			membershipList[address] = member
+			logger.Printf("UPDATE: %s updated to status %s with incarnation %d and version %d\n", address, status, incarnation, version)
 
 			suspicionMutex.Lock()
 			if status == "SUSPECTED" {
@@ -93,7 +103,7 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 			}
 			suspicionMutex.Unlock()
 
-		} else if version == member.Version && incarnation == member.Incarnation {
+		} else if version == member.Version && incarnation == member.Incarnation && member.Status != status {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
 				membershipList[address] = Member{
 					Status:      status,
@@ -107,10 +117,10 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 					failedMap[address] = cycle
 				}
 				suspicionMutex.Unlock()
-				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
+				logger.Printf("UPDATE: %s status changed to %s with same version and incarnation\n", address, status)
 			}
 		} else {
-			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
+			logger.Printf("Stale update for %s with older incarnation/version (%d/%d)\n", address, incarnation, version)
 		}
 	} else if status == "ALIVE" || status == "LEAVE" {
 		membershipList[address] = Member{
@@ -385,7 +395,7 @@ func checkForExpiredNodes() {
 	for node, markedCycle := range failedMap {
 		if markedCycle+timeoutCycles <= cycle {
 			membershipMutex.Lock()
-			delete(membershipList, node)
+			// delete(membershipList, node)
 			membershipMutex.Unlock()
 			logger.Printf("Grace period for %s expired, evicting node from membership list\n", node)
 			delete(failedMap, node)
@@ -471,7 +481,7 @@ func printSuspectedNodes() {
 	for address, member := range membershipList {
 		if member.Status == "SUSPECTED" {
 			count += 1
-			logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+			logger.Printf("%s, %s, %d, %d\n", address, member.Status, member.Incarnation, member.Version)
 		}
 	}
 	if count == 0 {
