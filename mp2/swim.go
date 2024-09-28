@@ -59,6 +59,11 @@ var (
 	localId          = ""
 )
 
+var (
+	bandwidthMutex     sync.Mutex
+	bandwidth          = 0
+)
+
 // helper function to update membership list (safely)
 // pass incarnation -1 when we detect a server down by ourselves
 func updateMemberStatus(id string, status string, incarnation int) {
@@ -157,6 +162,7 @@ func handleLeave() {
 			if err != nil {
 				logger.Printf("Error sending LEAVE to %s: %v\n", address, err)
 			}
+			updateBandwidth(len(addPiggybackToMessage("LEAVE")))
 		}
 	}
 
@@ -208,6 +214,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			if err != nil {
 				logger.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
 			} else {
+				updateBandwidth(len(addPiggybackToMessage("ACK")))
 				// logger.Printf("Sending ACK to %s...\n", remoteAddr.String())
 			}
 		} else if len(message) > 5 && message[:5] == "PING " {
@@ -226,6 +233,7 @@ func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
 			if err != nil {
 				logger.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
 			} else {
+				updateBandwidth(len(addPiggybackToMessage("INFO")))
 				// logger.Printf("Sending INFO to %s...\n", remoteAddr.String())
 			}
 		}
@@ -250,6 +258,7 @@ func indirectPingHandler(targetAddress string, requester string) {
 	if err != nil {
 		logger.Printf("Error sending PING to %s: %v", targetAddress, err)
 	}
+	updateBandwidth(len(addPiggybackToMessage("PING")))
 
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
@@ -271,6 +280,7 @@ func indirectPingHandler(targetAddress string, requester string) {
 		if err != nil {
 			logger.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
 		} else {
+			updateBandwidth(len(addPiggybackToMessage("INDIRECT_ACK")))
 			logger.Printf("Send INDIRECT ACK to %s", requester)
 		}
 	}
@@ -324,6 +334,7 @@ func processPingCycle(wg *sync.WaitGroup, localAddress string) {
 					if err != nil {
 						return
 					}
+					updateBandwidth(len(addPiggybackToMessage(request)))
 					// Wait for a response (ACK)
 					buf := make([]byte, 1024)
 					conn.SetReadDeadline(time.Now().Add(pingTimeout))
@@ -419,6 +430,7 @@ func pingSingleAddress(id string) int {
 		logger.Printf("Error sending PING to %s: %v\n", address, err)
 		return 1
 	}
+	updateBandwidth(len(addPiggybackToMessage("PING")))
 
 	// Set a deadline for receiving a response
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
@@ -458,6 +470,7 @@ func pingIntroducer() int {
 		logger.Printf("Error sending JOIN to %s: %v\n", introducerAddress, err)
 		return 1
 	}
+	updateBandwidth(len(addPiggybackToMessage("JOIN")))
 
 	// Set a deadline for receiving a response
 	conn.SetReadDeadline(time.Now().Add(pingTimeout))
@@ -682,7 +695,31 @@ func getLocalId() string {
 	return localId
 }
 
+func getBandwidth() int {
+	bandwidthMutex.Lock()
+	defer bandwidthMutex.Unlock()
+
+	return bandwidth
+}
+
+func updateBandwidth(val int) {
+	bandwidthMutex.Lock()
+	defer bandwidthMutex.Unlock()
+
+	bandwidth += val
+}
+
 func main() {
+
+	// for report testing
+	// messageDropRate = 0
+	// suspicionEnabled = true
+	// go func() {
+    //     time.Sleep(20 * time.Second)
+    //     fmt.Println("Exiting program after 20 seconds.")
+	// 	fmt.Printf("Total bandwidth used in bytes: %d\n", getBandwidth())
+    //     os.Exit(0)
+    // }()
 
 	var wg sync.WaitGroup
 
@@ -696,6 +733,7 @@ func main() {
 		fmt.Println("set LOGFILE environtment variable with export LOGFILE=")
 		os.Exit(1)
 	}
+	logFile = "./../mp1/" + logFile
 	file, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
