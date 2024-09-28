@@ -78,31 +78,38 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 			version = member.Version
 		}
 		if version > member.Version || (version == member.Version && incarnation > member.Incarnation) || status == "LEAVE" {
-			// When a member rejoins after leaving, retain the version, update status and incarnation.
-			if status == "LEAVE" {
-				member.Status = status
-				member.Incarnation = incarnation
-				// Do not increment version on leave, only on failure
-			} else if status == "FAILED" {
-				member.Status = status
-				member.Incarnation = incarnation
-				member.Version++
+			// Update member if the incoming version is higher or the same version but newer incarnation or the status is LEAVE
+			// Leave case: Do not change version if node rejoins after LEAVE
+			if status == "ALIVE" && member.Status == "LEAVE" {
+				membershipList[address] = Member{
+					Status:      "ALIVE",
+					Incarnation: incarnation,
+					Version:     version, // Version remains the same on rejoin after leave
+				}
+				logger.Printf("UPDATE: Node %s rejoined after LEAVE. Incarnation: %d, Version: %d\n", address, incarnation, version)
+			} else if status == "ALIVE" && member.Status == "FAILED" {
+				membershipList[address] = Member{
+					Status:      "ALIVE",
+					Incarnation: incarnation,
+					Version:     version + 1, // Increment version on rejoin after failure
+				}
+				logger.Printf("UPDATE: Node %s rejoined after FAILURE. Incarnation: %d, Version: %d\n", address, incarnation, version+1)
 			} else {
-				member.Status = status
-				member.Incarnation = incarnation
-				member.Version = version
-			}
-			membershipList[address] = member
-			logger.Printf("UPDATE: %s updated to status %s with incarnation %d and version %d\n", address, status, incarnation, version)
+				membershipList[address] = Member{
+					Status:      status,
+					Incarnation: incarnation,
+					Version:     version,
+				}
+				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
 
-			suspicionMutex.Lock()
-			if status == "SUSPECTED" {
-				suspicionMap[address] = cycle
-			} else if status == "FAILED" {
-				failedMap[address] = cycle
+				suspicionMutex.Lock()
+				if status == "SUSPECTED" {
+					suspicionMap[address] = cycle
+				} else if status == "FAILED" {
+					failedMap[address] = cycle
+				}
+				suspicionMutex.Unlock()
 			}
-			suspicionMutex.Unlock()
-
 		} else if version == member.Version && incarnation == member.Incarnation {
 			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
 				membershipList[address] = Member{
@@ -117,10 +124,10 @@ func updateMemberStatus(address string, status string, incarnation int, version 
 					failedMap[address] = cycle
 				}
 				suspicionMutex.Unlock()
-				logger.Printf("UPDATE: %s status changed to %s with same version and incarnation\n", address, status)
+				logger.Printf("UPDATE: Successfully updated %s to %s\n", address, status)
 			}
 		} else {
-			logger.Printf("Stale update for %s with older incarnation/version (%d/%d)\n", address, incarnation, version)
+			logger.Printf("Stale update for %s with older incarnation %d\n", address, incarnation)
 		}
 	} else if status == "ALIVE" || status == "LEAVE" {
 		membershipList[address] = Member{
