@@ -394,8 +394,8 @@ func checkForExpiredNodes() {
 	}
 
 	for node, markedCycle := range failedMap {
-		// if markedCycle+timeoutCycles <= cycle {
-		if markedCycle <= cycle {
+		if markedCycle+timeoutCycles <= cycle {
+		// if markedCycle <= cycle {
 			membershipMutex.Lock()
 			delete(membershipList, node)
 			membershipMutex.Unlock()
