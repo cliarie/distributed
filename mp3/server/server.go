@@ -318,3 +318,46 @@ func (s *Server) replicateFile(replica string, hydfsFile string, content []byte)
 
 	s.logger.Printf("Replicated HyDFS file %s to replica %s", hydfsFile, replica)
 }
+
+// HandleGet processes get requests
+func (s *Server) HandleGet(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	replicas := s.getReplicas(req.HyDFSFile) // finds which replicas store requested file
+
+	// Attempt to fetch from the first available replica
+	for _, replica := range replicas {
+		if replica == s.address {
+			// Fetch locally, if cur server isreplica, read from .files dir and writes to local file path
+			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+			content, err := os.ReadFile(hydfsPath)
+			if err != nil {
+				s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
+				continue
+			}
+			// Write to local file
+			err = os.WriteFile(req.LocalFile, content, 0644)
+			if err != nil {
+				s.logger.Printf("Error writing to local file %s: %v", req.LocalFile, err)
+				continue
+			}
+			s.logger.Printf("Fetched HyDFS file %s to local file %s", req.HyDFSFile, req.LocalFile)
+			return Response{
+				Status:  "success",
+				Message: "File fetched successfully.",
+			}
+		} else {
+			// Forward the get request to the replica
+			resp := s.forwardRequest(replica, req)
+			if resp.Status == "success" {
+				return resp
+			}
+		}
+	}
+
+	return Response{
+		Status:  "error",
+		Message: "Failed to fetch the file from all replicas.",
+	}
+}
