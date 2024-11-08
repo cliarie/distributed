@@ -145,3 +145,69 @@ func (c *Client) SendRequest(req Request) Response {
 func (c *Client) Close() {
 	c.conn.Close()
 }
+
+// Cache management functions
+
+// AddToCache adds a file to the cache
+func (c *Client) AddToCache(file string, content string) {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	// If file already in cache, update its position, moved to end of cache order slice slice to mark recently used
+	for i, f := range c.cacheOrder {
+		if f == file {
+			c.cacheOrder = append(c.cacheOrder[:i], c.cacheOrder[i+1:]...)
+			break
+		}
+	}
+
+	// Add to cache, append file to cache order
+	c.cache[file] = CacheEntry{
+		Content: content,
+		Time:    time.Now(),
+	}
+	c.cacheOrder = append(c.cacheOrder, file)
+
+	// Evict if cache exceeds max size (lru evicted)
+	if len(c.cacheOrder) > CACHE_MAX_SIZE {
+		evict := c.cacheOrder[0]
+		delete(c.cache, evict)
+		c.cacheOrder = c.cacheOrder[1:]
+	}
+}
+
+// GetFromCache retrieves a file from the cache
+func (c *Client) GetFromCache(file string) (string, bool) {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	entry, exists := c.cache[file]
+	if !exists {
+		return "", false
+	}
+
+	// Update LRU order
+	for i, f := range c.cacheOrder {
+		if f == file {
+			c.cacheOrder = append(c.cacheOrder[:i], c.cacheOrder[i+1:]...)
+			break
+		}
+	}
+	c.cacheOrder = append(c.cacheOrder, file)
+
+	return entry.Content, true
+}
+
+// InvalidateCache removes a file in the cache (when file modified or appended)
+func (c *Client) InvalidateCache(file string) {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	delete(c.cache, file)
+	for i, f := range c.cacheOrder {
+		if f == file {
+			c.cacheOrder = append(c.cacheOrder[:i], c.cacheOrder[i+1:]...)
+			break
+		}
+	}
+}
