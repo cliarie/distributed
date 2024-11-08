@@ -141,11 +141,6 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 	}
 
 	fmt.Printf("json: %s\n", jsonData)
-	fmt.Printf("extra bytes: %d\n", reader.Buffered())
-	// buffer := make([]byte, 4096)
-	// n, err := reader.Read(buffer)
-	// fmt.Printf("conn read: %s\n", buffer[:n])
-	// // Remove delimiter and parse JSON
 	var resp Response
 	err = json.Unmarshal(jsonData, &resp)
 	if err != nil {
@@ -295,7 +290,7 @@ func main() {
 			}
 			client.conn.Write(content)
 			fmt.Println(resp.Message)
-			return
+			continue
 
 		case "get":
 			if len(parts) != 3 {
