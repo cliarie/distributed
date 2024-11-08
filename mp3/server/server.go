@@ -361,3 +361,91 @@ func (s *Server) HandleGet(req Request) Response {
 		Message: "Failed to fetch the file from all replicas.",
 	}
 }
+
+// HandleAppend processes append requests
+func (s *Server) HandleAppend(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	replicas := s.getReplicas(req.HyDFSFile)
+
+	// Check if the file exists on the primary replica, if not forward to primary
+	primary := replicas[0]
+	if primary != s.address {
+		// Forward the append request to the primary replica
+		return s.forwardRequest(primary, req)
+	}
+
+	// Primary replica handles the append
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+
+	// Check if HyDFS file exists
+	if _, err := os.Stat(hydfsPath); os.IsNotExist(err) {
+		return Response{
+			Status:  "error",
+			Message: "HyDFS file does not exist.",
+		}
+	}
+
+	// Append content to HyDFS file
+	f, err := os.OpenFile(hydfsPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		s.logger.Printf("Error opening HyDFS file %s for append: %v", req.HyDFSFile, err)
+		return Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to open HyDFS file: %v", err),
+		}
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(req.Content)
+	if err != nil {
+		s.logger.Printf("Error appending to HyDFS file %s: %v", req.HyDFSFile, err)
+		return Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to append to HyDFS file: %v", err),
+		}
+	}
+
+	s.logger.Printf("Appended to HyDFS file %s from local file %s", req.HyDFSFile, req.LocalFile)
+
+	// Replicate the append to other replicas
+	for _, replica := range replicas[1:] {
+		go s.replicateAppend(replica, req.HyDFSFile, req.Content)
+	}
+
+	return Response{
+		Status:  "success",
+		Message: "File appended successfully.",
+	}
+}
+
+// replicateAppend sends the append content to a replica
+func (s *Server) replicateAppend(replica string, hydfsFile string, content string) {
+	conn, err := net.Dial("udp", replica)
+	if err != nil {
+		s.logger.Printf("Error dialing replica %s for append replication: %v", replica, err)
+		return
+	}
+	defer conn.Close()
+
+	replicaReq := Request{
+		Operation: APPEND,
+		HyDFSFile: hydfsFile,
+		Content:   content,
+	}
+
+	data, err := json.Marshal(replicaReq)
+	if err != nil {
+		s.logger.Printf("Error marshalling append replication request: %v", err)
+		return
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		s.logger.Printf("Error sending append replication request to %s: %v", replica, err)
+		return
+	}
+
+	s.logger.Printf("Replicated append to HyDFS file %s on replica %s", hydfsFile, replica)
+}
