@@ -7,8 +7,12 @@ package main
 
 import (
 	"crypto/sha1"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -165,4 +169,152 @@ func (s *Server) getReplicas(filename string) []string {
 		replicas = append(replicas, s.serverMap[serverHash])
 	}
 	return replicas
+}
+
+// forwardRequest forwards a request to another server and waits for the response
+func (s *Server) forwardRequest(target string, req Request) Response {
+	conn, err := net.Dial("udp", target)
+	if err != nil {
+		s.logger.Printf("Error dialing target server %s: %v", target, err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to forward request to target server.",
+		}
+	}
+	defer conn.Close()
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		s.logger.Printf("Error marshalling forwarded request: %v", err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to marshal forwarded request.",
+		}
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		s.logger.Printf("Error sending forwarded request to %s: %v", target, err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to send forwarded request.",
+		}
+	}
+
+	// Set a timeout for the response
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// Wait for the response
+	buffer := make([]byte, BUFFER_SIZE)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		s.logger.Printf("Error reading forwarded response from %s: %v", target, err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to read forwarded response.",
+		}
+	}
+
+	var resp Response
+	err = json.Unmarshal(buffer[:n], &resp)
+	if err != nil {
+		s.logger.Printf("Error unmarshalling forwarded response: %v", err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to unmarshal forwarded response.",
+		}
+	}
+
+	return resp
+}
+
+// HandleCreate processes create requests
+func (s *Server) HandleCreate(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	replicas := s.getReplicas(req.HyDFSFile) // which servers should store file
+
+	// Check if the file already exists on the primary replica (first server is primary replica)
+	primary := replicas[0]
+	if primary != s.address {
+		// if cur server is not primary, forward to primary
+		return s.forwardRequest(primary, req)
+	}
+
+	// Primary replica handles the creation
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+
+	// Check if HyDFS file already exists (prevent dups)
+	if _, err := os.Stat(hydfsPath); err == nil {
+		return Response{
+			Status:  "error",
+			Message: "HyDFS file already exists.",
+		}
+	}
+
+	// Read local file content (from client)
+	content, err := os.ReadFile(req.LocalFile)
+	if err != nil {
+		s.logger.Printf("Error reading local file %s: %v", req.LocalFile, err)
+		return Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to read local file: %v", err),
+		}
+	}
+
+	// Write content to HyDFS file (.files dir)
+	err = os.WriteFile(hydfsPath, content, 0644)
+	if err != nil {
+		s.logger.Printf("Error creating HyDFS file %s: %v", req.HyDFSFile, err)
+		return Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to create HyDFS file: %v", err),
+		}
+	}
+
+	s.logger.Printf("Created HyDFS file %s from local file %s", req.HyDFSFile, req.LocalFile)
+
+	// Replicate the file to other replicas (async with goroutines to avoid blocking)
+	for _, replica := range replicas[1:] {
+		go s.replicateFile(replica, req.HyDFSFile, content)
+	}
+
+	// Update file map to maintain mapping of hydfs files to respective replicas
+	s.files[req.HyDFSFile] = replicas
+
+	return Response{
+		Status:  "success",
+		Message: "File created successfully.",
+	}
+}
+
+// replicateFile sends create req to replica server with file content to replicate file
+func (s *Server) replicateFile(replica string, hydfsFile string, content []byte) {
+	conn, err := net.Dial("udp", replica)
+	if err != nil {
+		s.logger.Printf("Error dialing replica %s for replication: %v", replica, err)
+		return
+	}
+	defer conn.Close()
+
+	replicaReq := Request{
+		Operation: CREATE,
+		HyDFSFile: hydfsFile,
+		Content:   string(content),
+	}
+
+	data, err := json.Marshal(replicaReq)
+	if err != nil {
+		s.logger.Printf("Error marshalling replication request: %v", err)
+		return
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		s.logger.Printf("Error sending replication request to %s: %v", replica, err)
+		return
+	}
+
+	s.logger.Printf("Replicated HyDFS file %s to replica %s", hydfsFile, replica)
 }
