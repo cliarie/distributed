@@ -3,6 +3,10 @@ HyDFS Server:
 Manages file storage, replication, and handles client requests.
 Each server instance maintains a portion of the consistent hash ring and is responsible for specific file replicas.
 */
+/*
+NOTE: Handling Create Get Append Merge and shell commands implemented (can check commit msgs)
+Membership i.e. Failure Detection not in place
+*/
 package main
 
 import (
@@ -757,7 +761,7 @@ func (s *Server) Start() {
 	// Start handling incoming requests from client
 	go s.HandleIncomingRequests(conn)
 
-	// Start heartbeat mechanism (might replace with mp2?)
+	// Start heartbeat mechanism (might replace with mp2, no heartbeating failure detection here)
 
 	// Monitor membership for failures and in case rejoin
 

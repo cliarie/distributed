@@ -2,6 +2,9 @@
 HyDFS Client: Provides an interface for users to perform file operations (create, get, append, merge)
 Manages client-side caching to optimize read performance.
 */
+/*
+NOTE: LRU Cache, parsing shell commands and sending req to Server
+*/
 package main
 
 import (
