@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -571,4 +572,211 @@ func (s *Server) HandleListMemIDs(req Request) Response {
 		Message: "Membership list with ring IDs.",
 		Servers: serversInfo,
 	}
+}
+
+// HandleMerge processes merge requests, ensure all replicas of a file are identical
+func (s *Server) HandleMerge(req Request) Response {
+	// Implementation of merge to ensure all replicas are identical (tbd check back on)
+	// assumes no concurrent operations during merge...
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	replicas := s.getReplicas(req.HyDFSFile)
+
+	// Read content from all replicas, concantenate in hash ring order
+	contents := make(map[string]string)
+	for _, replica := range replicas {
+		if replica == s.address {
+			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+			content, err := os.ReadFile(hydfsPath)
+			if err != nil {
+				s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
+				continue
+			}
+			contents[replica] = string(content)
+		} else {
+			// Forward a special merge request to the replica to get file content
+			mergeReq := Request{
+				Operation: MERGE,
+				HyDFSFile: req.HyDFSFile,
+			}
+			resp := s.forwardRequest(replica, mergeReq)
+			if resp.Status == "success" {
+				contents[replica] = resp.Message
+			}
+		}
+	}
+
+	// Merge contents ensuring ring order
+	mergedContent := ""
+	for _, replica := range replicas {
+		if content, exists := contents[replica]; exists {
+			mergedContent += content
+		}
+	}
+
+	// Write merged content back to all replicas
+	for _, replica := range replicas {
+		if replica == s.address {
+			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+			err := os.WriteFile(hydfsPath, []byte(mergedContent), 0644)
+			if err != nil {
+				s.logger.Printf("Error writing merged content to HyDFS file %s: %v", req.HyDFSFile, err)
+				continue
+			}
+		} else {
+			// Send the merged content to the replica
+			go s.sendMergedContent(replica, req.HyDFSFile, mergedContent)
+		}
+	}
+
+	s.logger.Printf("Merged HyDFS file %s across all replicas.", req.HyDFSFile)
+	return Response{
+		Status:  "success",
+		Message: "Merge completed successfully.",
+	}
+}
+
+// sendMergedContent sends the merged content to a replica
+func (s *Server) sendMergedContent(replica string, hydfsFile string, content string) {
+	conn, err := net.Dial("udp", replica)
+	if err != nil {
+		s.logger.Printf("Error dialing replica %s for sending merged content: %v", replica, err)
+		return
+	}
+	defer conn.Close()
+
+	mergeReq := Request{
+		Operation: MERGE,
+		HyDFSFile: hydfsFile,
+		Content:   content,
+	}
+
+	data, err := json.Marshal(mergeReq)
+	if err != nil {
+		s.logger.Printf("Error marshalling merge request: %v", err)
+		return
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		s.logger.Printf("Error sending merge request to %s: %v", replica, err)
+		return
+	}
+
+	s.logger.Printf("Sent merged content to replica %s for HyDFS file %s", replica, hydfsFile)
+}
+
+// processRequest desrialize and routes the request
+func (s *Server) processRequest(data []byte, clientAddr *net.UDPAddr, conn *net.UDPConn) {
+	var req Request
+	err := json.Unmarshal(data, &req)
+	if err != nil {
+		s.logger.Printf("Invalid request format from %v: %v", clientAddr, err)
+		s.sendResponse(Response{
+			Status:  "error",
+			Message: "Invalid request format.",
+		}, clientAddr, conn)
+		return
+	}
+
+	var resp Response
+
+	switch req.Operation {
+	case CREATE:
+		resp = s.HandleCreate(req)
+	case GET:
+		resp = s.HandleGet(req)
+	case APPEND:
+		resp = s.HandleAppend(req)
+	case MERGE:
+		resp = s.HandleMerge(req)
+	case LS:
+		resp = s.HandleLS(req)
+	case STORE:
+		resp = s.HandleStore(req)
+	case GETFROM:
+		resp = s.HandleGetFromReplica(req)
+	case LIST_MEM_IDS:
+		resp = s.HandleListMemIDs(req)
+	default:
+		resp = Response{
+			Status:  "error",
+			Message: "Unsupported operation.",
+		}
+	}
+
+	s.sendResponse(resp, clientAddr, conn)
+}
+
+// HandleIncomingRequests processes all incoming requests
+func (s *Server) HandleIncomingRequests(conn *net.UDPConn) {
+	buffer := make([]byte, BUFFER_SIZE)
+	for {
+		n, clientAddr, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			s.logger.Printf("Error reading from UDP: %v", err)
+			continue
+		}
+
+		data := buffer[:n]
+		go s.processRequest(data, clientAddr, conn)
+	}
+}
+
+// sendResponse sends a response back to the client
+func (s *Server) sendResponse(resp Response, clientAddr *net.UDPAddr, conn *net.UDPConn) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		s.logger.Printf("Error marshalling response: %v", err)
+		return
+	}
+
+	_, err = conn.WriteToUDP(data, clientAddr)
+	if err != nil {
+		s.logger.Printf("Error sending response to %v: %v", clientAddr, err)
+		return
+	}
+}
+
+// Start begins the server to listen for incoming requests and handle heartbeats
+func (s *Server) Start() {
+	addr, err := net.ResolveUDPAddr("udp", s.address)
+	if err != nil {
+		s.logger.Fatalf("Failed to resolve UDP address %s: %v", s.address, err)
+	}
+
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		s.logger.Fatalf("Failed to listen on UDP port %s: %v", s.address, err)
+	}
+	defer conn.Close()
+
+	s.logger.Printf("Server started and listening on %s", s.address)
+
+	// Start handling incoming requests from client
+	go s.HandleIncomingRequests(conn)
+
+	// Start heartbeat mechanism (might replace with mp2?)
+
+	// Monitor membership for failures and in case rejoin
+
+	// Prevent the main goroutine from exiting
+	select {}
+}
+
+// main function to start the server
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: go run server.go <server_address> <all_server_addresses_comma_separated>")
+		fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
+		return
+	}
+
+	serverAddress := os.Args[1]
+	allServersArg := os.Args[2]
+	allServers := strings.Split(allServersArg, ",")
+
+	server := NewServer(serverAddress, allServers)
+	server.Start()
 }
