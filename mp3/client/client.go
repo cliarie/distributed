@@ -361,24 +361,10 @@ func main() {
 			localFile := parts[1]
 			hydfsFile := parts[2]
 
-			// Check if local file exists
-			if _, err := os.Stat(localFile); os.IsNotExist(err) {
-				fmt.Printf("Local file %s does not exist.\n", localFile)
-				continue
-			}
-
-			// Read local file content
-			content, err := os.ReadFile(localFile)
-			if err != nil {
-				fmt.Printf("Failed to read local file %s: %v\n", localFile, err)
-				continue
-			}
-
 			req := Request{
 				Operation: APPEND,
 				LocalFile: localFile,
 				HyDFSFile: hydfsFile,
-				Content:   string(content),
 			}
 
 			resp, _ := client.SendRequest(req)
@@ -386,7 +372,10 @@ func main() {
 				// Invalidate cache for this file
 				client.InvalidateCache(hydfsFile)
 			}
+			content, _ := os.ReadFile(localFile)
+			client.conn.Write(content)
 			fmt.Println(resp.Message)
+			continue
 
 		case "merge":
 			if len(parts) != 2 {
