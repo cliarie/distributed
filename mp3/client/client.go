@@ -5,9 +5,13 @@ Manages client-side caching to optimize read performance.
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -208,6 +212,239 @@ func (c *Client) InvalidateCache(file string) {
 		if f == file {
 			c.cacheOrder = append(c.cacheOrder[:i], c.cacheOrder[i+1:]...)
 			break
+		}
+	}
+}
+
+// Helper function to display usage
+func displayUsage() {
+	fmt.Println("Available Commands:")
+	fmt.Println("  create <localfilename> <HyDFSfilename>       - Create a new HyDFS file")
+	fmt.Println("  get <HyDFSfilename> <localfilename>          - Get a HyDFS file")
+	fmt.Println("  append <localfilename> <HyDFSfilename>      - Append to a HyDFS file")
+	fmt.Println("  merge <HyDFSfilename>                        - Merge replicas of a HyDFS file")
+	fmt.Println("  ls <HyDFSfilename>                           - List replicas of a HyDFS file")
+	fmt.Println("  store                                        - List all files stored on this server")
+	fmt.Println("  getfromreplica <VMaddress> <HyDFSfilename> <localfilename> - Get a file from a specific replica")
+	fmt.Println("  list_mem_ids                                 - List membership list with ring IDs")
+	fmt.Println("  exit                                         - Exit the client")
+}
+
+// main function
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run client.go <server_address>")
+		fmt.Println("Example: go run client.go localhost:23120")
+		return
+	}
+
+	serverAddress := os.Args[1]
+	client := NewClient(serverAddress)
+	defer client.Close()
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("HyDFS Client Started.")
+	displayUsage()
+
+	for {
+		fmt.Print("> ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+
+		parts := strings.Fields(input)
+		command := parts[0]
+
+		switch command {
+		case "create":
+			if len(parts) != 3 {
+				fmt.Println("Usage: create <localfilename> <HyDFSfilename>")
+				continue
+			}
+			localFile := parts[1]
+			hydfsFile := parts[2]
+
+			// Check if local file exists
+			if _, err := os.Stat(localFile); os.IsNotExist(err) {
+				fmt.Printf("Local file %s does not exist.\n", localFile)
+				continue
+			}
+
+			req := Request{
+				Operation: CREATE,
+				LocalFile: localFile,
+				HyDFSFile: hydfsFile,
+			}
+
+			resp := client.SendRequest(req)
+			fmt.Println(resp.Message)
+
+		case "get":
+			if len(parts) != 3 {
+				fmt.Println("Usage: get <HyDFSfilename> <localfilename>")
+				continue
+			}
+			hydfsFile := parts[1]
+			localFile := parts[2]
+
+			// Check if file is in cache
+			if content, exists := client.GetFromCache(hydfsFile); exists {
+				// Write to local file
+				err := os.WriteFile(localFile, []byte(content), 0644)
+				if err != nil {
+					fmt.Printf("Failed to write to local file %s: %v\n", localFile, err)
+					continue
+				}
+				fmt.Println("File fetched from cache successfully.")
+				continue
+			}
+
+			req := Request{
+				Operation: GET,
+				HyDFSFile: hydfsFile,
+				LocalFile: localFile,
+			}
+
+			resp := client.SendRequest(req)
+			if resp.Status == "success" {
+				// Read the fetched file content to cache
+				content, err := os.ReadFile(localFile)
+				if err == nil {
+					client.AddToCache(hydfsFile, string(content))
+				}
+			}
+			fmt.Println(resp.Message)
+
+		case "append":
+			if len(parts) != 3 {
+				fmt.Println("Usage: append <localfilename> <HyDFSfilename>")
+				continue
+			}
+			localFile := parts[1]
+			hydfsFile := parts[2]
+
+			// Check if local file exists
+			if _, err := os.Stat(localFile); os.IsNotExist(err) {
+				fmt.Printf("Local file %s does not exist.\n", localFile)
+				continue
+			}
+
+			// Read local file content
+			content, err := os.ReadFile(localFile)
+			if err != nil {
+				fmt.Printf("Failed to read local file %s: %v\n", localFile, err)
+				continue
+			}
+
+			req := Request{
+				Operation: APPEND,
+				LocalFile: localFile,
+				HyDFSFile: hydfsFile,
+				Content:   string(content),
+			}
+
+			resp := client.SendRequest(req)
+			if resp.Status == "success" {
+				// Invalidate cache for this file
+				client.InvalidateCache(hydfsFile)
+			}
+			fmt.Println(resp.Message)
+
+		case "merge":
+			if len(parts) != 2 {
+				fmt.Println("Usage: merge <HyDFSfilename>")
+				continue
+			}
+			hydfsFile := parts[1]
+
+			req := Request{
+				Operation: MERGE,
+				HyDFSFile: hydfsFile,
+			}
+
+			resp := client.SendRequest(req)
+			fmt.Println(resp.Message)
+
+		case "ls":
+			if len(parts) != 2 {
+				fmt.Println("Usage: ls <HyDFSfilename>")
+				continue
+			}
+			hydfsFile := parts[1]
+
+			req := Request{
+				Operation: LS,
+				HyDFSFile: hydfsFile,
+			}
+
+			resp := client.SendRequest(req)
+			if resp.Status == "success" && len(resp.Servers) > 0 {
+				fmt.Printf("Replicas of %s:\n", hydfsFile)
+				for _, server := range resp.Servers {
+					fmt.Printf("Address: %s, RingID: %d\n", server.Address, server.RingID)
+				}
+			} else {
+				fmt.Println(resp.Message)
+			}
+
+		case "store":
+			req := Request{
+				Operation: STORE,
+			}
+
+			resp := client.SendRequest(req)
+			if resp.Status == "success" && len(resp.Files) > 0 {
+				fmt.Println("Files stored on this server:")
+				for _, file := range resp.Files {
+					fmt.Println(file)
+				}
+			} else {
+				fmt.Println(resp.Message)
+			}
+
+		case "getfromreplica":
+			if len(parts) != 4 {
+				fmt.Println("Usage: getfromreplica <VMaddress> <HyDFSfilename> <localfilename>")
+				continue
+			}
+			replicaAddr := parts[1]
+			hydfsFile := parts[2]
+			localFile := parts[3]
+
+			req := Request{
+				Operation:   GETFROM,
+				ReplicaAddr: replicaAddr,
+				HyDFSFile:   hydfsFile,
+				LocalFile:   localFile,
+			}
+
+			resp := client.SendRequest(req)
+			fmt.Println(resp.Message)
+
+		case "list_mem_ids":
+			req := Request{
+				Operation: LIST_MEM_IDS,
+			}
+
+			resp := client.SendRequest(req)
+			if resp.Status == "success" && len(resp.Servers) > 0 {
+				fmt.Println("Membership List with Ring IDs:")
+				for _, server := range resp.Servers {
+					fmt.Printf("Address: %s, RingID: %d\n", server.Address, server.RingID)
+				}
+			} else {
+				fmt.Println(resp.Message)
+			}
+
+		case "exit":
+			fmt.Println("Exiting HyDFS client.")
+			return
+
+		default:
+			fmt.Println("Unknown command.")
+			displayUsage()
 		}
 	}
 }
