@@ -8,6 +8,7 @@ NOTE: LRU Cache, parsing shell commands and sending req to Server
 package main
 
 import (
+	"io"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ const (
 	SERVER_PORT    = 23120 // not used directly in code
 	BUFFER_SIZE    = 65535 // size of udp buffer for incoming msgs
 	CACHE_MAX_SIZE = 100   // Maximum number of files in cache
+	timeoutDuration = 1 * time.Second
 )
 
 // Operation Types
@@ -69,83 +71,88 @@ type CacheEntry struct {
 	Time    time.Time
 }
 
-// Client represents the HyDFS client's state with udp conn, server address, and caching
+// Client represents the HyDFS client's state with TCP connection, server address, and caching
 type Client struct {
-	conn       *net.UDPConn
-	serverAddr *net.UDPAddr
+	conn       *net.TCPConn
+	serverAddr *net.TCPAddr
 	cache      map[string]CacheEntry
 	cacheMutex sync.Mutex
 	cacheOrder []string // To implement LRU
 }
 
-// NewClient initializes the client
+// NewClient initializes the client using TCP
 func NewClient(serverAddress string) *Client {
-	addr, err := net.ResolveUDPAddr("udp", serverAddress)
+	addr, err := net.ResolveTCPAddr("tcp", serverAddress)
 	if err != nil {
 		log.Fatalf("Failed to resolve server address %s: %v", serverAddress, err)
 	}
 
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		log.Fatalf("Failed to dial server at %s: %v", serverAddress, err)
-	}
-
 	client := &Client{
-		conn:       conn,
 		serverAddr: addr,
-		cache:      make(map[string]CacheEntry), // set up cache map for lru
-		cacheOrder: []string{},                  // set up order for lru
+		cache:      make(map[string]CacheEntry), // set up cache map for LRU
+		cacheOrder: []string{},                  // set up order for LRU
 	}
 
 	return client
 }
 
-// SendRequest sends a request to the server and waits for a response
-func (c *Client) SendRequest(req Request) Response {
-	data, err := json.Marshal(req) // seralize req, send to server, wait for resp, deserialize resp
+// SendRequest reads JSON response until delimiter
+func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	// Send request as before
+	conn, err := net.DialTCP("tcp", nil, c.serverAddr)
 	if err != nil {
-		log.Printf("Failed to marshal request: %v", err)
+		log.Fatalf("Failed to dial server at %s: %v", c.serverAddr, err)
 		return Response{
 			Status:  "error",
-			Message: "Failed to marshal request.",
+			Message: "Failed to connect to server.",
+		}, nil
+	}
+	c.conn = conn
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return Response{Status: "error", Message: "Failed to marshal request."}, nil
+	}
+	conn.Write(data)
+	conn.Write([]byte("\n\n")) // Custom delimiter
+
+	// Read JSON response until the delimiter
+	reader := bufio.NewReader(conn)
+	jsonData := make([]byte, 0, 4096) // Buffer to store the JSON response
+	for {
+		// Read a single byte at a time to avoid buffering extra data
+		b, err := reader.ReadByte()
+		if err != nil {
+			log.Printf("Failed to read byte: %v", err)
+			return Response{Status: "error", Message: "Failed to read JSON response."}, nil
+		}
+
+		// Append byte to jsonData
+		jsonData = append(jsonData, b)
+
+		// Check if we've reached the delimiter (e.g., "\n\n")
+		if len(jsonData) >= 2 && string(jsonData[len(jsonData)-2:]) == "\n\n" {
+			break
 		}
 	}
 
-	// Send the request
-	_, err = c.conn.Write(data)
-	if err != nil {
-		log.Printf("Failed to send request: %v", err)
-		return Response{
-			Status:  "error",
-			Message: "Failed to send request.",
-		}
-	}
-
-	// Set a timeout for the response
-	c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-	// Wait for the response
-	buffer := make([]byte, BUFFER_SIZE)
-	n, _, err := c.conn.ReadFromUDP(buffer)
-	if err != nil {
-		log.Printf("Failed to read response: %v", err)
-		return Response{
-			Status:  "error",
-			Message: "Failed to read response.",
-		}
-	}
-
+	fmt.Printf("json: %s\n", jsonData)
+	fmt.Printf("extra bytes: %d\n", reader.Buffered())
+	// buffer := make([]byte, 4096)
+	// n, err := reader.Read(buffer)
+	// fmt.Printf("conn read: %s\n", buffer[:n])
+	// // Remove delimiter and parse JSON
 	var resp Response
-	err = json.Unmarshal(buffer[:n], &resp)
+	err = json.Unmarshal(jsonData, &resp)
 	if err != nil {
-		log.Printf("Failed to unmarshal response: %v", err)
-		return Response{
-			Status:  "error",
-			Message: "Failed to unmarshal response.",
-		}
+		return Response{Status: "error", Message: "Failed to unmarshal JSON."}, nil
 	}
 
-	return resp
+	return resp, reader
 }
 
 // Close closes the UDP connection
@@ -280,9 +287,15 @@ func main() {
 				LocalFile: localFile,
 				HyDFSFile: hydfsFile,
 			}
+			resp, _ := client.SendRequest(req)
 
-			resp := client.SendRequest(req)
+			content, err := os.ReadFile(localFile)
+			if err != nil {
+				return
+			}
+			client.conn.Write(content)
 			fmt.Println(resp.Message)
+			return
 
 		case "get":
 			if len(parts) != 3 {
@@ -291,7 +304,7 @@ func main() {
 			}
 			hydfsFile := parts[1]
 			localFile := parts[2]
-
+		
 			// Check if file is in cache
 			if content, exists := client.GetFromCache(hydfsFile); exists {
 				// Write to local file
@@ -303,22 +316,47 @@ func main() {
 				fmt.Println("File fetched from cache successfully.")
 				continue
 			}
-
+		
 			req := Request{
 				Operation: GET,
 				HyDFSFile: hydfsFile,
-				LocalFile: localFile,
 			}
+		
+			resp, reader := client.SendRequest(req)
+			if resp.Status != "success" {
+				fmt.Println(resp.Message)
+				continue
+			}
+		
+			// Open or create the local file for writing
+			file, err := os.Create(localFile)
+			if err != nil {
+				fmt.Printf("Failed to create local file %s: %v\n", localFile, err)
+				continue
+			}
+			defer file.Close()
 
-			resp := client.SendRequest(req)
-			if resp.Status == "success" {
-				// Read the fetched file content to cache
-				content, err := os.ReadFile(localFile)
-				if err == nil {
-					client.AddToCache(hydfsFile, string(content))
+			// Read file data from server
+			buffer := make([]byte, 4096)
+			for {
+				n, err := reader.Read(buffer)
+				if err != nil {
+					if err == io.EOF {
+						break // End of file data
+					}
+					fmt.Printf("Failed to read file data: %v\n", err)
+					break
+				}
+		
+				// Write data to local file
+				_, err = file.Write(buffer[:n])
+				if err != nil {
+					fmt.Printf("Failed to write data to local file: %v\n", err)
+					break
 				}
 			}
-			fmt.Println(resp.Message)
+		
+			fmt.Println("File downloaded successfully.")
 
 		case "append":
 			if len(parts) != 3 {
@@ -348,7 +386,7 @@ func main() {
 				Content:   string(content),
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			if resp.Status == "success" {
 				// Invalidate cache for this file
 				client.InvalidateCache(hydfsFile)
@@ -367,7 +405,7 @@ func main() {
 				HyDFSFile: hydfsFile,
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			fmt.Println(resp.Message)
 
 		case "ls":
@@ -382,7 +420,7 @@ func main() {
 				HyDFSFile: hydfsFile,
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			if resp.Status == "success" && len(resp.Servers) > 0 {
 				fmt.Printf("Replicas of %s:\n", hydfsFile)
 				for _, server := range resp.Servers {
@@ -397,7 +435,7 @@ func main() {
 				Operation: STORE,
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			if resp.Status == "success" && len(resp.Files) > 0 {
 				fmt.Println("Files stored on this server:")
 				for _, file := range resp.Files {
@@ -423,7 +461,7 @@ func main() {
 				LocalFile:   localFile,
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			fmt.Println(resp.Message)
 
 		case "list_mem_ids":
@@ -431,7 +469,7 @@ func main() {
 				Operation: LIST_MEM_IDS,
 			}
 
-			resp := client.SendRequest(req)
+			resp, _ := client.SendRequest(req)
 			if resp.Status == "success" && len(resp.Servers) > 0 {
 				fmt.Println("Membership List with Ring IDs:")
 				for _, server := range resp.Servers {
