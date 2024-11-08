@@ -449,3 +449,126 @@ func (s *Server) replicateAppend(replica string, hydfsFile string, content strin
 
 	s.logger.Printf("Replicated append to HyDFS file %s on replica %s", hydfsFile, replica)
 }
+
+// HandleLS processes ls requests
+func (s *Server) HandleLS(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	replicas, exists := s.files[req.HyDFSFile] // list all replicas of hydfs file
+	if !exists {
+		return Response{
+			Status:  "error",
+			Message: "HyDFS file does not exist.",
+		}
+	}
+
+	serversInfo := []ServerInfo{}
+	for _, replica := range replicas {
+		ringID := hashKey(replica)
+		serversInfo = append(serversInfo, ServerInfo{
+			Address: replica,
+			RingID:  ringID,
+		})
+	}
+
+	return Response{
+		Status:  "success",
+		Message: "List of replicas.",
+		Servers: serversInfo,
+	}
+}
+
+// HandleStore processes store requests
+func (s *Server) HandleStore(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// List all hydfs files stored on this server
+	storedFiles := []string{}
+	files, err := os.ReadDir(FILES_DIR) // reads .files directory to list all stored files
+	if err != nil {
+		s.logger.Printf("Error reading files directory: %v", err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to read files directory.",
+		}
+	}
+
+	for _, file := range files {
+		if !file.IsDir() {
+			storedFiles = append(storedFiles, file.Name())
+		}
+	}
+
+	// Get ring ID
+	ringID := hashKey(s.address)
+
+	serversInfo := []ServerInfo{
+		{
+			Address: s.address,
+			RingID:  ringID,
+		},
+	}
+
+	return Response{
+		Status:  "success",
+		Message: "Files stored on this server.",
+		Files:   storedFiles,
+		Servers: serversInfo,
+	}
+}
+
+// HandleGetFromReplica processes getfromreplica requests, clients can fetch hydfs file from replica
+func (s *Server) HandleGetFromReplica(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+
+	// Check if HyDFS file exists
+	content, err := os.ReadFile(hydfsPath) // read file from .files directory
+	if err != nil {
+		s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
+		return Response{
+			Status:  "error",
+			Message: "HyDFS file does not exist.",
+		}
+	}
+
+	// Write to local file
+	err = os.WriteFile(req.LocalFile, content, 0644)
+	if err != nil {
+		s.logger.Printf("Error writing to local file %s: %v", req.LocalFile, err)
+		return Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to write to local file: %v", err),
+		}
+	}
+
+	s.logger.Printf("Fetched HyDFS file %s from replica to local file %s", req.HyDFSFile, req.LocalFile)
+	return Response{
+		Status:  "success",
+		Message: "File fetched from replica successfully.",
+	}
+}
+
+// HandleListMemIDs processes list_mem_ids requests, list all servers in membership list with ring ids
+func (s *Server) HandleListMemIDs(req Request) Response {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	serversInfo := []ServerInfo{}
+	for _, member := range s.membershipList {
+		serversInfo = append(serversInfo, ServerInfo{
+			Address: member.Address,
+			RingID:  member.RingID,
+		})
+	}
+
+	return Response{
+		Status:  "success",
+		Message: "Membership list with ring IDs.",
+		Servers: serversInfo,
+	}
+}
