@@ -4,6 +4,12 @@ Manages client-side caching to optimize read performance.
 */
 /*
 NOTE: LRU Cache, parsing shell commands and sending req to Server
+- integrate in mp2 for failure detection
+- test replication
+- test replication after failure
+- redirecting operations to the primary vm
+- client append ordering (from same client to same file)
+- client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
 */
 package main
 
