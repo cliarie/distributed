@@ -6,15 +6,24 @@ Each server instance maintains a portion of the consistent hash ring and is resp
 /*
 NOTE: Handling Create Get Append Merge and shell commands implemented (can check commit msgs)
 Membership i.e. Failure Detection not in place
+To-do:
+- integrate in mp2 for failure detection
+- test replication
+- test replication after failure
+- redirecting operations to the primary vm
+- client append ordering (from same client to same file)
+- client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
 */
 package main
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -234,7 +243,7 @@ func (s *Server) forwardRequest(target string, req Request) Response {
 }
 
 // HandleCreate processes create requests
-func (s *Server) HandleCreate(req Request) Response {
+func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader) Response {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -250,7 +259,7 @@ func (s *Server) HandleCreate(req Request) Response {
 	// Primary replica handles the creation
 	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
 
-	// Check if HyDFS file already exists (prevent dups)
+	// Check if HyDFS file already exists (prevent dups) THIS HANGS FOR NOW, IT SHOULD SEND IT DIRECTLY AND RETURN
 	if _, err := os.Stat(hydfsPath); err == nil {
 		return Response{
 			Status:  "error",
@@ -258,39 +267,50 @@ func (s *Server) HandleCreate(req Request) Response {
 		}
 	}
 
-	// Read local file content (from client)
-	content, err := os.ReadFile(req.LocalFile)
-	if err != nil {
-		s.logger.Printf("Error reading local file %s: %v", req.LocalFile, err)
-		return Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to read local file: %v", err),
-		}
+	resp := Response{
+		Status:  "success",
+		Message: "File appended successfully.",
 	}
+	respData, _ := json.Marshal(resp)
 
-	// Write content to HyDFS file (.files dir)
-	err = os.WriteFile(hydfsPath, content, 0644)
-	if err != nil {
-		s.logger.Printf("Error creating HyDFS file %s: %v", req.HyDFSFile, err)
-		return Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to create HyDFS file: %v", err),
+	// Send JSON response + delimiter
+	conn.Write(respData)
+	conn.Write([]byte("\n\n")) // Custom delimiter
+
+	// Read file data from client
+	buffer := make([]byte, 4096)
+	file, _ := os.Create(hydfsPath)
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break // End of file data
+			}
+			fmt.Printf("Failed to read file data: %v\n", err)
+			break
+		}
+
+		// Write data to local HyDFS file
+		_, err = file.Write(buffer[:n])
+		if err != nil {
+			fmt.Printf("Failed to write data to local file: %v\n", err)
+			break
 		}
 	}
 
 	s.logger.Printf("Created HyDFS file %s from local file %s", req.HyDFSFile, req.LocalFile)
 
 	// Replicate the file to other replicas (async with goroutines to avoid blocking)
+	// NOTE: IF FILES R TOO LARGE, CANT STORE CONTENTS IN A STRING
 	for _, replica := range replicas[1:] {
-		go s.replicateFile(replica, req.HyDFSFile, content)
+		go s.replicateFile(replica, req.HyDFSFile, []byte{})
 	}
 
 	// Update file map to maintain mapping of hydfs files to respective replicas
 	s.files[req.HyDFSFile] = replicas
-
 	return Response{
-		Status:  "success",
-		Message: "File created successfully.",
+		Status:  "error",
+		Message: "HyDFS file already exists.",
 	}
 }
 
@@ -324,51 +344,36 @@ func (s *Server) replicateFile(replica string, hydfsFile string, content []byte)
 	s.logger.Printf("Replicated HyDFS file %s to replica %s", hydfsFile, replica)
 }
 
-// HandleGet processes get requests
-func (s *Server) HandleGet(req Request) Response {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+// Send JSON response, followed by a delimiter, then the file content
+func (s *Server) HandleGet(req Request, conn net.Conn) Response {
+	// Prepare the JSON response
+	resp := Response{
+		Status:  "success",
+		Message: "File fetched successfully.",
+	}
+	respData, _ := json.Marshal(resp)
 
-	replicas := s.getReplicas(req.HyDFSFile) // finds which replicas store requested file
+	// Send JSON response + delimiter
+	conn.Write(respData)
+	conn.Write([]byte("\n\n")) // Custom delimiter
 
-	// Attempt to fetch from the first available replica
-	for _, replica := range replicas {
-		if replica == s.address {
-			// Fetch locally, if cur server isreplica, read from .files dir and writes to local file path
-			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
-			content, err := os.ReadFile(hydfsPath)
-			if err != nil {
-				s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
-				continue
-			}
-			// Write to local file
-			err = os.WriteFile(req.LocalFile, content, 0644)
-			if err != nil {
-				s.logger.Printf("Error writing to local file %s: %v", req.LocalFile, err)
-				continue
-			}
-			s.logger.Printf("Fetched HyDFS file %s to local file %s", req.HyDFSFile, req.LocalFile)
-			return Response{
-				Status:  "success",
-				Message: "File fetched successfully.",
-			}
-		} else {
-			// Forward the get request to the replica
-			resp := s.forwardRequest(replica, req)
-			if resp.Status == "success" {
-				return resp
-			}
+	// Now send the file content
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+	content, err := os.ReadFile(hydfsPath)
+	if err != nil {
+		s.logger.Printf("Failed to read file: %v", err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to read file.",
 		}
 	}
-
-	return Response{
-		Status:  "error",
-		Message: "Failed to fetch the file from all replicas.",
-	}
+	conn.Write(content) // Send file data
+	fmt.Printf("sending file content: %s\n", content)
+	return resp
 }
 
 // HandleAppend processes append requests
-func (s *Server) HandleAppend(req Request) Response {
+func (s *Server) HandleAppend(req Request, conn net.Conn, reader *bufio.Reader) Response {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -383,7 +388,7 @@ func (s *Server) HandleAppend(req Request) Response {
 
 	// Primary replica handles the append
 	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
-
+	
 	// Check if HyDFS file exists
 	if _, err := os.Stat(hydfsPath); os.IsNotExist(err) {
 		return Response{
@@ -391,26 +396,37 @@ func (s *Server) HandleAppend(req Request) Response {
 			Message: "HyDFS file does not exist.",
 		}
 	}
+	
+	resp := Response{
+		Status:  "success",
+		Message: "File created successfully.",
+	}
+	respData, _ := json.Marshal(resp)
+	conn.Write(respData)
+	conn.Write([]byte("\n\n"))
 
 	// Append content to HyDFS file
-	f, err := os.OpenFile(hydfsPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		s.logger.Printf("Error opening HyDFS file %s for append: %v", req.HyDFSFile, err)
-		return Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to open HyDFS file: %v", err),
+	file, _ := os.OpenFile(hydfsPath, os.O_APPEND|os.O_WRONLY, 0644)
+	defer file.Close()
+	buffer := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break // End of file data
+			}
+			fmt.Printf("Failed to read file data: %v\n", err)
+			break
 		}
-	}
-	defer f.Close()
 
-	_, err = f.WriteString(req.Content)
-	if err != nil {
-		s.logger.Printf("Error appending to HyDFS file %s: %v", req.HyDFSFile, err)
-		return Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to append to HyDFS file: %v", err),
+		// Write data to local HyDFS file
+		_, err = file.Write(buffer[:n])
+		if err != nil {
+			fmt.Printf("Failed to write data to local file: %v\n", err)
+			break
 		}
 	}
+	
 
 	s.logger.Printf("Appended to HyDFS file %s from local file %s", req.HyDFSFile, req.LocalFile)
 
@@ -670,29 +686,34 @@ func (s *Server) sendMergedContent(replica string, hydfsFile string, content str
 
 	s.logger.Printf("Sent merged content to replica %s for HyDFS file %s", replica, hydfsFile)
 }
-
-// processRequest desrialize and routes the request
-func (s *Server) processRequest(data []byte, clientAddr *net.UDPAddr, conn *net.UDPConn) {
+// processRequest deserializes and routes the request
+func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader) {
 	var req Request
 	err := json.Unmarshal(data, &req)
 	if err != nil {
-		s.logger.Printf("Invalid request format from %v: %v", clientAddr, err)
+		s.logger.Printf("Invalid request format: %v", err)
 		s.sendResponse(Response{
 			Status:  "error",
 			Message: "Invalid request format.",
-		}, clientAddr, conn)
+		}, conn)
 		return
 	}
 
 	var resp Response
 
+	// Route the request to the appropriate handler based on the operation
 	switch req.Operation {
 	case CREATE:
-		resp = s.HandleCreate(req)
+		fmt.Printf("handling create\n")
+		resp = s.HandleCreate(req, conn, reader)
+		return
 	case GET:
-		resp = s.HandleGet(req)
+		resp = s.HandleGet(req, conn)
+		conn.Close()
+		return
 	case APPEND:
-		resp = s.HandleAppend(req)
+		resp = s.HandleAppend(req, conn, reader)
+		return
 	case MERGE:
 		resp = s.HandleMerge(req)
 	case LS:
@@ -710,36 +731,83 @@ func (s *Server) processRequest(data []byte, clientAddr *net.UDPAddr, conn *net.
 		}
 	}
 
-	s.sendResponse(resp, clientAddr, conn)
+	// Send the response back to the client over the TCP connection
+	s.sendResponse(resp, conn)
+	conn.Close()
 }
+// AcceptIncomingConnections listens for new TCP connections from clients
+func (s *Server) AcceptIncomingConnections(address string) {
+	// Resolve the TCP address and start listening
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatalf("Failed to listen on %s: %v", address, err)
+	}
+	defer listener.Close()
+	s.logger.Printf("Server is listening on %s", address)
 
-// HandleIncomingRequests processes all incoming requests
-func (s *Server) HandleIncomingRequests(conn *net.UDPConn) {
-	buffer := make([]byte, BUFFER_SIZE)
 	for {
-		n, clientAddr, err := conn.ReadFromUDP(buffer)
+		// Accept a new client connection
+		conn, err := listener.Accept()
 		if err != nil {
-			s.logger.Printf("Error reading from UDP: %v", err)
+			s.logger.Printf("Error accepting connection: %v", err)
 			continue
 		}
 
-		data := buffer[:n]
-		go s.processRequest(data, clientAddr, conn)
+		// Handle each client connection in a new goroutine
+		go s.handleClient(conn)
 	}
 }
 
-// sendResponse sends a response back to the client
-func (s *Server) sendResponse(resp Response, clientAddr *net.UDPAddr, conn *net.UDPConn) {
+// HandleIncomingRequests processes all incoming requests
+// func (s *Server) HandleIncomingRequests(conn *net.UDPConn) {
+// 	buffer := make([]byte, BUFFER_SIZE)
+// 	for {
+// 		n, clientAddr, err := conn.ReadFromUDP(buffer)
+// 		if err != nil {
+// 			s.logger.Printf("Error reading from UDP: %v", err)
+// 			continue
+// 		}
+
+// 		data := buffer[:n]
+// 		go s.processRequest(data, clientAddr, conn)
+// 	}
+// }
+
+// HandleClient processes requests from a single client
+func (s *Server) handleClient(conn net.Conn) {
+	defer conn.Close()
+	// buffer := make([]byte, BUFFER_SIZE)
+	// Read data from the client
+	// for {
+		reader := bufio.NewReader(conn)
+		jsonData := make([]byte, 0, 4096) // Buffer to store the JSON response
+		for {
+			b, _ := reader.ReadByte()
+			jsonData = append(jsonData, b)
+			if len(jsonData) >= 2 && string(jsonData[len(jsonData)-2:]) == "\n\n" {
+				break
+			}
+		}
+		fmt.Printf("extra bytes: %d\n", reader.Buffered())
+
+		fmt.Printf("read from client: %s\n", jsonData)
+		s.processRequest(jsonData, conn, reader)
+	// }
+}
+
+// sendResponse serializes and sends the response back to the client over TCP
+func (s *Server) sendResponse(resp Response, conn net.Conn) {
 	data, err := json.Marshal(resp)
 	if err != nil {
-		s.logger.Printf("Error marshalling response: %v", err)
+		s.logger.Printf("Failed to marshal response: %v", err)
 		return
 	}
 
-	_, err = conn.WriteToUDP(data, clientAddr)
+	_, err = conn.Write(data)
+	fmt.Printf("response: %s\n", data)
+	conn.Write([]byte("\n\n")) // Custom delimiter
 	if err != nil {
-		s.logger.Printf("Error sending response to %v: %v", clientAddr, err)
-		return
+		s.logger.Printf("Failed to send response: %v", err)
 	}
 }
 
@@ -759,7 +827,8 @@ func (s *Server) Start() {
 	s.logger.Printf("Server started and listening on %s", s.address)
 
 	// Start handling incoming requests from client
-	go s.HandleIncomingRequests(conn)
+	go s.AcceptIncomingConnections(s.address)
+	// go s.HandleIncomingRequests(conn)
 
 	// Start heartbeat mechanism (might replace with mp2, no heartbeating failure detection here)
 
