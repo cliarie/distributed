@@ -4,15 +4,22 @@ Manages file storage, replication, and handles client requests.
 Each server instance maintains a portion of the consistent hash ring and is responsible for specific file replicas.
 */
 /*
-NOTE: Handling Create Get Append Merge and shell commands implemented (can check commit msgs)
-Membership i.e. Failure Detection not in place
-To-do:
-- integrate in mp2 for failure detection
-- test replication
-- test replication after failure
-- redirecting operations to the primary vm
-- client append ordering (from same client to same file)
-- client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
+To-do (this is everything we need to get 100% on demo):
+- integrate in mp2 for failure detection or add any sort of failure detection (super simple, we only need to detect failures, no rejoins)
+- (30%) create
+-        add logic for forwarding to primary server
+-               either tell the client to send the create to the primary server
+-               or download the file onto the server, then send it to the primary server
+-        add logic for replicating
+-            have primary server act as a client, and send create requests to the replica addresses
+- (20%) replication after failure
+-        ??? have servers periodically check if they need to replicate any files from the prev 2 on the ring
+-            if so, just issue create requests to the prev server
+- (24%) client append ordering (from same client to same file)
+-        super super easy
+- (26%) client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
+-        merge all changes to primary?
+-        then overwrite replicas from primary?
 */
 package main
 
