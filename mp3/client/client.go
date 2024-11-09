@@ -428,7 +428,8 @@ func main() {
 			} else {
 				fmt.Println(resp.Message)
 			}
-
+		
+		// THIS IS JUST A WRAPPER AROUND SENDING A GET TO <VMaddress>
 		case "getfromreplica":
 			if len(parts) != 4 {
 				fmt.Println("Usage: getfromreplica <VMaddress> <HyDFSfilename> <localfilename>")
@@ -438,15 +439,65 @@ func main() {
 			hydfsFile := parts[2]
 			localFile := parts[3]
 
-			req := Request{
-				Operation:   GETFROM,
-				ReplicaAddr: replicaAddr,
-				HyDFSFile:   hydfsFile,
-				LocalFile:   localFile,
+			// Check if file is in cache
+			if content, exists := client.GetFromCache(hydfsFile); exists {
+				// Write to local file
+				err := os.WriteFile(localFile, []byte(content), 0644)
+				if err != nil {
+					fmt.Printf("Failed to write to local file %s: %v\n", localFile, err)
+					continue
+				}
+				fmt.Println("File fetched from cache successfully.")
+				continue
 			}
+		
+			req := Request{
+				Operation: GET,
+				HyDFSFile: hydfsFile,
+			}
+			
+			// connect client to replicaAddr
+			//fa24-cs425-0701.cs.illinois.edu:8080
+			oldAddr := client.serverAddr
+			addr, _ := net.ResolveTCPAddr("tcp", replicaAddr)
+			client.serverAddr = addr
+			resp, reader := client.SendRequest(req)
+			if resp.Status != "success" {
+				fmt.Println(resp.Message)
+				continue
+			}
+			// set client back to replicaAddr
+			client.serverAddr = oldAddr
+		
+			// Open or create the local file for writing
+			file, err := os.Create(localFile)
+			if err != nil {
+				fmt.Printf("Failed to create local file %s: %v\n", localFile, err)
+				continue
+			}
+			defer file.Close()
 
-			resp, _ := client.SendRequest(req)
-			fmt.Println(resp.Message)
+			// Read file data from server
+			buffer := make([]byte, 4096)
+			for {
+				n, err := reader.Read(buffer)
+				if err != nil {
+					if err == io.EOF {
+						break // End of file data
+					}
+					fmt.Printf("Failed to read file data: %v\n", err)
+					break
+				}
+		
+				// Write data to local file
+				_, err = file.Write(buffer[:n])
+				if err != nil {
+					fmt.Printf("Failed to write data to local file: %v\n", err)
+					break
+				}
+			}
+		
+			fmt.Println("File downloaded from replica successfully.")
 
 		case "list_mem_ids":
 			req := Request{
