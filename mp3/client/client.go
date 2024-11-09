@@ -298,12 +298,25 @@ func main() {
 				HyDFSFile: hydfsFile,
 			}
 			resp, _ := client.SendRequest(req)
+			if resp.Status == "redirect" {
+				newAddr := resp.Message
+				oldAddr := client.serverAddr
+				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+				client.serverAddr = addr
+				redirectedResp, _ := client.SendRequest(req)
+				content, _ := os.ReadFile(localFile)
+				client.conn.Write(content)
+				fmt.Println(redirectedResp.Message)
+				client.serverAddr = oldAddr
+				continue
+			}
 
 			content, err := os.ReadFile(localFile)
 			if err != nil {
 				return
 			}
 			client.conn.Write(content)
+			client.conn.Close()
 			fmt.Println(resp.Message)
 			continue
 
