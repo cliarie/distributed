@@ -48,7 +48,7 @@ const (
 	BUFFER_SIZE        = 65535           // Size of udp buffer for reading incoming msgs
 	FILES_DIR          = ".files"        // Where hydfs files are stored
 	LOG_FILE           = "server.log"    // Where server logs are written
-	REPLICATION_FACTOR = 1               // Num replicas each file should have
+	REPLICATION_FACTOR = 3               // Num replicas each file should have
 	REPLI_INTERVAL     = 10 * time.Second // Replication period interval
 	HEARTBEAT_INTERVAL = 2 * time.Second // Freq of senfding heartbeat msgs to other servers
 	FAILURE_TIMEOUT    = 5 * time.Second // Duration after server is considered failed after no heartbeat
