@@ -48,7 +48,7 @@ const (
 	BUFFER_SIZE        = 65535           // Size of udp buffer for reading incoming msgs
 	FILES_DIR          = ".files"        // Where hydfs files are stored
 	LOG_FILE           = "server.log"    // Where server logs are written
-	REPLICATION_FACTOR = 2               // Num replicas each file should have
+	REPLICATION_FACTOR = 1               // Num replicas each file should have
 	REPLI_INTERVAL     = 10 * time.Second // Replication period interval
 	HEARTBEAT_INTERVAL = 2 * time.Second // Freq of senfding heartbeat msgs to other servers
 	FAILURE_TIMEOUT    = 5 * time.Second // Duration after server is considered failed after no heartbeat
@@ -519,7 +519,6 @@ func (s *Server) HandleGet(req Request, conn net.Conn) Response {
 		}
 	}
 	conn.Write(content) // Send file data
-	fmt.Printf("sending file content: %s\n", content)
 	return resp
 }
 
@@ -555,7 +554,6 @@ func (s *Server) HandleAppend(req Request, conn net.Conn, reader *bufio.Reader) 
 			Message: "HyDFS file does not exist.",
 		}
 	}
-	
 	resp := Response{
 		Status:  "success",
 		Message: "File appended successfully.",
@@ -838,14 +836,18 @@ func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader
 	// Route the request to the appropriate handler based on the operation
 	switch req.Operation {
 	case CREATE:
+		fmt.Printf("[%s] Begin handling create\n", time.Now().Format("2006-01-02 15:04:05"))
 		resp = s.HandleCreate(req, conn, reader, false)
+		fmt.Printf("[%s] Create finished\n", time.Now().Format("2006-01-02 15:04:05"))
 		return
 	case REPLICATE:
 		resp = s.HandleCreate(req, conn, reader, true)
 		return
 	case GET:
+		fmt.Printf("[%s] Begin handling get\n", time.Now().Format("2006-01-02 15:04:05"))
 		resp = s.HandleGet(req, conn)
 		conn.Close()
+		fmt.Printf("[%s] Get finished\n", time.Now().Format("2006-01-02 15:04:05"))
 		return
 	case GETFROM:
 		resp = s.HandleGetFromReplica(req, conn)
@@ -854,6 +856,7 @@ func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader
 	case APPEND:
 		fmt.Printf("[%s] Begin handling append\n", time.Now().Format("2006-01-02 15:04:05"))
 		resp = s.HandleAppend(req, conn, reader)
+		fmt.Printf("[%s] Append finished\n", time.Now().Format("2006-01-02 15:04:05"))
 		return
 	case MERGE:
 		resp = s.HandleMerge(req, conn)
@@ -1039,16 +1042,17 @@ func main() {
 	// 	fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
 	// 	return
 	// }
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run server.go <server_address>")
-		fmt.Println("Example: go run server.go localhost:23120")
+	if len(os.Args) != 1 {
+		fmt.Println("Usage: go run server.go")
 		return
 	}
 
+	const localAddressFile = "./../../mp2/localaddr.txt"
+	data, _ := ioutil.ReadFile(localAddressFile)
+	localAddress := string(data)
+	serverAddress := localAddress
+
 	go swimMain()
-
-	serverAddress := os.Args[1]
-
 	globalServer = NewServer(serverAddress, []string{})
 	globalServer.Start()
 }

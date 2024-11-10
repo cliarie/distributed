@@ -339,7 +339,7 @@ func displayUsage() {
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run client.go <server_address>")
-		fmt.Println("Example: go run client.go localhost:23120")
+		fmt.Println("Example: go run client.go fa24-cs425-0701.cs.illinois.edu:8080")
 		return
 	}
 
@@ -543,6 +543,7 @@ func main() {
 			client.conn.Write(content)
 			fmt.Println(resp.Message)
 			fmt.Printf("File appended succesfully.\n")
+			client.conn.Close()
 			continue
 		
 		case "multiappend":
