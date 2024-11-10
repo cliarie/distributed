@@ -354,7 +354,7 @@ func main() {
 				oldAddr := client.serverAddr
 				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
 				client.serverAddr = addr
-				_, _ = client.SendRequest(req)
+				_, reader = client.SendRequest(req)
 
 				// Open or create the local file for writing
 				file, err := os.Create(localFile)

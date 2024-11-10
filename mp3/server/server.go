@@ -47,8 +47,8 @@ const (
 	FILES_DIR          = ".files"        // Where hydfs files are stored
 	LOG_FILE           = "server.log"    // Where server logs are written
 	REPLICATION_FACTOR = 2               // Num replicas each file should have
-	REPLI_INTERVAL     = 5 * time.Second // Num replicas each file should have
-	HEARTBEAT_INTERVAL = 2 * time.Second // Freq of sending heartbeat msgs to other servers
+	REPLI_INTERVAL     = 10 * time.Second // Replication period interval
+	HEARTBEAT_INTERVAL = 2 * time.Second // Freq of senfding heartbeat msgs to other servers
 	FAILURE_TIMEOUT    = 5 * time.Second // Duration after server is considered failed after no heartbeat
 )
 
@@ -356,6 +356,10 @@ func (s *Server) replicateFile(replica string, hydfsFile string) {
 	resp, _, conn := SendRequest(req, replica)
 	if resp.Status == "exists" {
 		fmt.Printf("aborted replication, file exists\n")
+		return
+	} else if resp.Status == "error" {
+		fmt.Printf("aborted replication, unable to connect to server\n")
+		return
 	}
 	localFile := filepath.Join(FILES_DIR, hydfsFile)
 	content, _ := os.ReadFile(localFile)
@@ -397,34 +401,41 @@ func (s *Server) periodicReplicator() {
 	}
 }
 
+// Helper function to check if an address is in the replicas list
+func containsAddress(replicas []string, address string) bool {
+	for _, replica := range replicas {
+		if replica == address {
+			return true
+		}
+	}
+	return false
+}
+
 // Send JSON response, followed by a delimiter, then the file content
 func (s *Server) HandleGet(req Request, conn net.Conn) Response {
-	respData, _ := json.Marshal(resp)
 	replicas := s.getReplicas(req.HyDFSFile)
-	// forward req to primary replica
-	// if !replicate {
-	// 	primary := replicas[0]
-	// 	if primary != s.address {
-	// 		// if cur server is not primary, forward to primary
-	// 		resp := Response{
-	// 			Status:  "redirect",
-	// 			Message: primary,
-	// 		}
-	// 		respData, _ := json.Marshal(resp)
-			
-	// 		// Send JSON response + delimiter
-	// 		conn.Write(respData)
-	// 		conn.Write([]byte("\n\n")) // Custom delimiter
-	// 		fmt.Printf("Not primary address, forwarding to %s\n", primary)
-	// 		return s.forwardRequest(primary, req)
-	// 	}
-	// }
+	// forward req if this server doesn't contain the file
+	if !containsAddress(replicas, s.address) {
+		primary := replicas[0]
+		resp := Response{
+			Status:  "redirect",
+			Message: primary,
+		}
+		respData, _ := json.Marshal(resp)
+		
+		// Send JSON response + delimiter
+		conn.Write(respData)
+		conn.Write([]byte("\n\n")) // Custom delimiter
+		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		return s.forwardRequest(primary, req)
+	}
 
 	// Prepare the JSON response
 	resp := Response{
 		Status:  "success",
 		Message: "File fetched successfully.",
 	}
+	respData, _ := json.Marshal(resp)
 	// Send JSON response + delimiter
 	conn.Write(respData)
 	conn.Write([]byte("\n\n")) // Custom delimiter
@@ -882,7 +893,7 @@ func SendRequest(req Request, addr string) (Response, *bufio.Reader, *net.TCPCon
 	serverAddr, _ := net.ResolveTCPAddr("tcp", addr)
 	conn, err := net.DialTCP("tcp", nil, serverAddr)
 	if err != nil {
-		log.Fatalf("Failed to dial server at %s: %v", serverAddr, err)
+		log.Println("Failed to dial server at %s: %v", serverAddr, err)
 		return Response{
 			Status:  "error",
 			Message: "Failed to connect to server.",
