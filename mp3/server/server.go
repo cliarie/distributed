@@ -17,9 +17,9 @@ To-do (this is everything we need to get 100% on demo):
 -                 (send replicate req to server, if other server alr has the file, then don't do anything. if not, send file)
 - (24%) client append ordering (from same client to same file) DONE!
 -        super super easy DONE!
-- (26%) client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
--        merge all changes to primary?
--        then overwrite replicas from primary?
+- (26%) client concurrent append - append to same file 2/4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
+-        merge all changes to primary
+-        then overwrite replicas from primary
 */
 package main
 
@@ -852,11 +852,13 @@ func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader
 		conn.Close()
 		return
 	case APPEND:
+		fmt.Printf("[%s] Begin handling append\n", time.Now().Format("2006-01-02 15:04:05"))
 		resp = s.HandleAppend(req, conn, reader)
 		return
 	case MERGE:
 		resp = s.HandleMerge(req, conn)
 	case SERVER_MERGE:
+		fmt.Printf("server merge initiated\n")
 		resp = s.HandleServerMerge(req, conn, reader)
 		return
 	case LS:
@@ -1001,7 +1003,7 @@ func (s *Server) sendResponse(resp Response, conn net.Conn) {
 	}
 }
 
-// Start begins the server to listen for incoming requests and handle heartbeats
+// Start begins the server to listen for incoming requests and handle heartbeats multiappend a fa24-cs425-0702.cs.illinois.edu:8080,fa24-cs425-0701.cs.illinois.edu:8080 a,d
 func (s *Server) Start() {
 	// addr, err := net.ResolveUDPAddr("udp", s.address)
 	// if err != nil {

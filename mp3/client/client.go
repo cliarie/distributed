@@ -166,6 +166,66 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 	return resp, reader
 }
 
+func generalSendRequest(req Request, addr string) (Response, *bufio.Reader, *net.TCPConn) {
+	// Establish a new TCP connection to the specified address
+	// multiappend a fa24-cs425-0701.cs.illinois.edu:8080,fa24-cs425-0702.cs.illinois.edu:8080,fa24-cs425-0703.cs.illinois.edu:8080 a,b,c
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		log.Fatalf("Failed to resolve address %s: %v", addr, err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to resolve server address.",
+		}, nil, nil
+	}
+
+	// Establish a new TCP connection to the resolved address
+	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		log.Fatalf("Failed to dial server at %s: %v", tcpAddr.String(), err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to connect to server.",
+		}, nil, nil
+	}
+
+	// Marshal the request to JSON
+	data, err := json.Marshal(req)
+	if err != nil {
+		return Response{Status: "error", Message: "Failed to marshal request."}, nil, nil
+	}
+
+	// Write the JSON request data followed by the custom delimiter
+	_, err = conn.Write(data)
+	if err != nil {
+		return Response{Status: "error", Message: "Failed to send request."}, nil, nil
+	}
+	_, _ = conn.Write([]byte("\n\n"))
+
+	// Read the JSON response until the delimiter
+	reader := bufio.NewReader(conn)
+	jsonData := make([]byte, 0, 4096)
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			log.Printf("Failed to read byte: %v", err)
+			return Response{Status: "error", Message: "Failed to read JSON response."}, nil, nil
+		}
+		jsonData = append(jsonData, b)
+		if len(jsonData) >= 2 && string(jsonData[len(jsonData)-2:]) == "\n\n" {
+			break
+		}
+	}
+
+	// Unmarshal the JSON response
+	var resp Response
+	err = json.Unmarshal(jsonData, &resp)
+	if err != nil {
+		return Response{Status: "error", Message: "Failed to unmarshal JSON."}, nil, nil
+	}
+
+	return resp, reader, conn
+}
+
 // Close closes the UDP connection
 func (c *Client) Close() {
 	c.conn.Close()
@@ -236,6 +296,29 @@ func (c *Client) InvalidateCache(file string) {
 		}
 	}
 }
+func multiAppendHelper(hydfsFile, vm, localFile string) {
+	req := Request{
+		Operation: APPEND,
+		LocalFile: localFile,
+		HyDFSFile: hydfsFile,
+	}
+
+	resp, _, conn := generalSendRequest(req, vm)
+
+	// Handle redirection if necessary
+	if resp.Status == "redirect" {
+		newAddr := resp.Message
+		_, _, conn := generalSendRequest(req, newAddr)
+		content, _ := os.ReadFile(localFile)
+		conn.Write(content)
+		conn.Close()
+		return
+	}
+
+	content, _ := os.ReadFile(localFile)
+	conn.Write(content)
+	conn.Close()
+}
 
 // Helper function to display usage
 func displayUsage() {
@@ -243,6 +326,7 @@ func displayUsage() {
 	fmt.Println("  create <localfilename> <HyDFSfilename>       - Create a new HyDFS file")
 	fmt.Println("  get <HyDFSfilename> <localfilename>          - Get a HyDFS file")
 	fmt.Println("  append <localfilename> <HyDFSfilename>      - Append to a HyDFS file")
+	fmt.Println("  multiappend <HyDFSfilename> <VM1, VM2, ...> <localfile1, localfile2, ...>")
 	fmt.Println("  merge <HyDFSfilename>                        - Merge replicas of a HyDFS file")
 	fmt.Println("  ls <HyDFSfilename>                           - List replicas of a HyDFS file")
 	fmt.Println("  store                                        - List all files stored on this server")
@@ -287,6 +371,7 @@ func main() {
 			localFile := parts[1]
 			hydfsFile := parts[2]
 
+			fmt.Printf("Create initiated.\n")
 			// Check if local file exists
 			if _, err := os.Stat(localFile); os.IsNotExist(err) {
 				fmt.Printf("Local file %s does not exist.\n", localFile)
@@ -329,6 +414,7 @@ func main() {
 			}
 			hydfsFile := parts[1]
 			localFile := parts[2]
+			fmt.Printf("Get initiated.\n")
 		
 			// Check if file is in cache
 			if content, exists := client.GetFromCache(hydfsFile); exists {
@@ -425,6 +511,8 @@ func main() {
 			}
 			localFile := parts[1]
 			hydfsFile := parts[2]
+			
+			fmt.Printf("append initiated\n")
 
 			req := Request{
 				Operation: APPEND,
@@ -454,6 +542,50 @@ func main() {
 			content, _ := os.ReadFile(localFile)
 			client.conn.Write(content)
 			fmt.Println(resp.Message)
+			fmt.Printf("File appended succesfully.\n")
+			continue
+		
+		case "multiappend":
+			fmt.Printf("multiappend initiated\n")
+			if len(parts) < 4 {
+				fmt.Println("Usage: multiappend <HyDFSfilename> <VM1,VM2,...> <localfile1,localfile2,...>")
+				continue
+			}
+		
+			// Parse inputs
+			hydfsFile := parts[1]
+			vms := strings.Split(parts[2], ",")
+			localFiles := strings.Split(parts[3], ",")
+		
+			// Check that the number of VMs matches the number of local files
+			if len(vms) != len(localFiles) {
+				fmt.Println("Error: The number of VMs must match the number of local files.")
+				continue
+			}
+		
+			// Create a local WaitGroup
+			var wg sync.WaitGroup
+
+			// Call multiAppendHelper for each VM and corresponding local file
+			for i := range vms {
+				vm := vms[i]
+				localFile := localFiles[i]
+		
+				// Increment the WaitGroup counter
+				wg.Add(1)
+		
+				// Start each call in a goroutine
+				go func(vm, localFile string) {
+					defer wg.Done() // Decrement the counter when done
+					multiAppendHelper(hydfsFile, vm, localFile)
+				}(vm, localFile)
+			}
+		
+			// Wait for all goroutines to complete
+			wg.Wait()
+
+			fmt.Printf("Files multiappended successfully.\n")
+		
 			continue
 
 		case "merge":
@@ -467,9 +599,22 @@ func main() {
 				Operation: MERGE,
 				HyDFSFile: hydfsFile,
 			}
+			fmt.Printf("Merge initiated.\n")
 
 			resp, _ := client.SendRequest(req)
 			fmt.Println(resp.Message)
+
+			if resp.Status == "redirect" {
+				newAddr := resp.Message
+				oldAddr := client.serverAddr
+				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+				client.serverAddr = addr
+				_, _ = client.SendRequest(req)
+				client.serverAddr = oldAddr
+				fmt.Println(resp.Message)
+				continue
+			}
+			continue
 
 		case "ls":
 			if len(parts) != 2 {
