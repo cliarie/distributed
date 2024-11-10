@@ -143,6 +143,7 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 		b, err := reader.ReadByte()
 		if err != nil {
 			log.Printf("Failed to read byte: %v", err)
+			log.Printf("Read so far: %s\n", jsonData)
 			return Response{Status: "error", Message: "Failed to read JSON response."}, nil
 		}
 
@@ -303,12 +304,13 @@ func main() {
 				oldAddr := client.serverAddr
 				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
 				client.serverAddr = addr
-				redirectedResp, _ := client.SendRequest(req)
+				_, _ = client.SendRequest(req)
 				content, _ := os.ReadFile(localFile)
 				client.conn.Write(content)
-				fmt.Println(redirectedResp.Message)
 				client.serverAddr = oldAddr
 				continue
+			} else if resp.Status == "exists" {
+				fmt.Printf("File already exists in HyDFS.\n")
 			}
 
 			content, err := os.ReadFile(localFile)
@@ -346,7 +348,42 @@ func main() {
 			}
 		
 			resp, reader := client.SendRequest(req)
-			if resp.Status != "success" {
+			
+			if resp.Status == "redirect" {
+				newAddr := resp.Message
+				oldAddr := client.serverAddr
+				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+				client.serverAddr = addr
+				_, _ = client.SendRequest(req)
+
+				// Open or create the local file for writing
+				file, err := os.Create(localFile)
+				if err != nil {
+					fmt.Printf("Failed to create local file %s: %v\n", localFile, err)
+					continue
+				}
+				defer file.Close()
+
+				// Read file data from server
+				buffer := make([]byte, 4096)
+				for {
+					n, err := reader.Read(buffer)
+					if err != nil {
+						if err == io.EOF {
+							break // End of file data
+						}
+						fmt.Printf("Failed to read file data: %v\n", err)
+						break
+					}
+					// Write data to local file
+					_, err = file.Write(buffer[:n])
+				}
+			
+				fmt.Println("File downloaded successfully.")
+
+				client.serverAddr = oldAddr
+				continue
+			} else if resp.Status != "success" {
 				fmt.Println(resp.Message)
 				continue
 			}

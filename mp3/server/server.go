@@ -13,10 +13,11 @@ To-do (this is everything we need to get 100% on demo):
 -        add logic for replicating DONE!
 -            have primary server act as a client, and send create requests to the replica addresses
 - (20%) replication after failure
--        ??? have servers periodically check if they need to replicate any files from the prev 2 on the ring
--            if so, just issue create requests to the prev server
+-          HALF DONE!!! Just add remove the server from hashRing upon failure and we're set
+-          have servers check if they need to replicate files to other replicas periodically 
+-                 (send replicate req to server, if other server alr has the file, then don't do anything. if not, send file)
 - (24%) client append ordering (from same client to same file)
--        super super easy
+-        super super easy DONE!
 - (26%) client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
 -        merge all changes to primary?
 -        then overwrite replicas from primary?
@@ -46,6 +47,7 @@ const (
 	FILES_DIR          = ".files"        // Where hydfs files are stored
 	LOG_FILE           = "server.log"    // Where server logs are written
 	REPLICATION_FACTOR = 2               // Num replicas each file should have
+	REPLI_INTERVAL     = 5 * time.Second // Num replicas each file should have
 	HEARTBEAT_INTERVAL = 2 * time.Second // Freq of sending heartbeat msgs to other servers
 	FAILURE_TIMEOUT    = 5 * time.Second // Duration after server is considered failed after no heartbeat
 )
@@ -250,13 +252,13 @@ func (s *Server) forwardRequest(target string, req Request) Response {
 	return resp
 }
 
+// Mutex locking issue, cant handle multiple requests at once...
 // HandleCreate processes create requests
 func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, replicate bool) Response {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	// s.mutex.Lock()
+	// defer s.mutex.Unlock()
 
 	replicas := s.getReplicas(req.HyDFSFile) // which servers should store file
-
 	// Check if the file already exists on the primary replica (first server is primary replica)
 	if !replicate {
 		primary := replicas[0]
@@ -267,7 +269,7 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 				Message: primary,
 			}
 			respData, _ := json.Marshal(resp)
-		
+			
 			// Send JSON response + delimiter
 			conn.Write(respData)
 			conn.Write([]byte("\n\n")) // Custom delimiter
@@ -281,9 +283,18 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 
 	// Check if HyDFS file already exists (prevent dups) THIS HANGS FOR NOW, IT SHOULD SEND IT DIRECTLY AND RETURN
 	if _, err := os.Stat(hydfsPath); err == nil {
+		resp := Response{
+			Status:  "exists",
+			Message: "File already exists in HyDFS.",
+		}
+		respData, _ := json.Marshal(resp)
+	
+		// Send JSON response + delimiter
+		conn.Write(respData)
+		conn.Write([]byte("\n\n")) // Custom delimiter
 		return Response{
-			Status:  "error",
-			Message: "HyDFS file already exists.",
+			Status:  "exists",
+			Message: "File already exists in HyDFS.",
 		}
 	}
 
@@ -321,9 +332,10 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 	s.logger.Printf("Created HyDFS file %s from local file %s", req.HyDFSFile, req.LocalFile)
 
 	// Replicate the file to other replicas (async with goroutines to avoid blocking)
-	for _, replica := range replicas[1:] {
-		fmt.Printf("REPLICATEING FILEEEE\n")
-		go s.replicateFile(replica, req.HyDFSFile)
+	if !replicate {
+		for _, replica := range replicas[1:] {
+			go s.replicateFile(replica, req.HyDFSFile)
+		}
 	}
 
 	// Update file map to maintain mapping of hydfs files to respective replicas
@@ -341,21 +353,78 @@ func (s *Server) replicateFile(replica string, hydfsFile string) {
 		HyDFSFile: hydfsFile,
 	}
 	fmt.Printf("sending replicate req to %s\n", replica)
-	_, _, conn := SendRequest(req, replica)
+	resp, _, conn := SendRequest(req, replica)
+	if resp.Status == "exists" {
+		fmt.Printf("aborted replication, file exists\n")
+	}
 	localFile := filepath.Join(FILES_DIR, hydfsFile)
 	content, _ := os.ReadFile(localFile)
 	conn.Write(content)
 }
 
+func (s *Server) periodicReplicator() {
+	ticker := time.NewTicker(REPLI_INTERVAL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.logger.Println("Starting periodic replication cycle...")
+
+			// List all files in the ./.files/ directory
+			files, _ := os.ReadDir("./.files/")
+
+			// Iterate over each file
+			for _, file := range files {
+				hydfsFile := file.Name()
+
+				// Determine the replicas for the file
+				replicas := s.getReplicas(hydfsFile)
+
+				// Send replication requests to each replica
+				for _, replica := range replicas {
+					// Skip replicating to self
+					if replica == s.address {
+						continue
+					}
+
+					go s.replicateFile(replica, hydfsFile)
+				}
+			}
+
+			s.logger.Println("Completed periodic replication.")
+		}
+	}
+}
+
 // Send JSON response, followed by a delimiter, then the file content
 func (s *Server) HandleGet(req Request, conn net.Conn) Response {
+	respData, _ := json.Marshal(resp)
+	replicas := s.getReplicas(req.HyDFSFile)
+	// forward req to primary replica
+	// if !replicate {
+	// 	primary := replicas[0]
+	// 	if primary != s.address {
+	// 		// if cur server is not primary, forward to primary
+	// 		resp := Response{
+	// 			Status:  "redirect",
+	// 			Message: primary,
+	// 		}
+	// 		respData, _ := json.Marshal(resp)
+			
+	// 		// Send JSON response + delimiter
+	// 		conn.Write(respData)
+	// 		conn.Write([]byte("\n\n")) // Custom delimiter
+	// 		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+	// 		return s.forwardRequest(primary, req)
+	// 	}
+	// }
+
 	// Prepare the JSON response
 	resp := Response{
 		Status:  "success",
 		Message: "File fetched successfully.",
 	}
-	respData, _ := json.Marshal(resp)
-
 	// Send JSON response + delimiter
 	conn.Write(respData)
 	conn.Write([]byte("\n\n")) // Custom delimiter
@@ -874,21 +943,23 @@ func (s *Server) sendResponse(resp Response, conn net.Conn) {
 
 // Start begins the server to listen for incoming requests and handle heartbeats
 func (s *Server) Start() {
-	addr, err := net.ResolveUDPAddr("udp", s.address)
-	if err != nil {
-		s.logger.Fatalf("Failed to resolve UDP address %s: %v", s.address, err)
-	}
+	// addr, err := net.ResolveUDPAddr("udp", s.address)
+	// if err != nil {
+	// 	s.logger.Fatalf("Failed to resolve UDP address %s: %v", s.address, err)
+	// }
 
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		s.logger.Fatalf("Failed to listen on UDP port %s: %v", s.address, err)
-	}
-	defer conn.Close()
+	// conn, err := net.ListenUDP("udp", addr)
+	// if err != nil {
+	// 	s.logger.Fatalf("Failed to listen on UDP port %s: %v", s.address, err)
+	// }
+	// defer conn.Close()
 
-	s.logger.Printf("Server started and listening on %s", s.address)
+	// s.logger.Printf("Server started and listening on %s", s.address)
 
 	// Start handling incoming requests from client
 	go s.AcceptIncomingConnections(s.address)
+
+	go s.periodicReplicator()
 	// go s.HandleIncomingRequests(conn)
 
 	// Start heartbeat mechanism (might replace with mp2, no heartbeating failure detection here)
