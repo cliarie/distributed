@@ -433,10 +433,24 @@ func main() {
 			}
 
 			resp, _ := client.SendRequest(req)
-			if resp.Status == "success" {
-				// Invalidate cache for this file
-				client.InvalidateCache(hydfsFile)
+
+			if resp.Status == "redirect" {
+				newAddr := resp.Message
+				oldAddr := client.serverAddr
+				addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+				client.serverAddr = addr
+				_, _ = client.SendRequest(req)
+				content, _ := os.ReadFile(localFile)
+				client.conn.Write(content)
+				client.serverAddr = oldAddr
+				continue
+			} else if resp.Status != "success" {
+				fmt.Println(resp.Message)
+				continue
 			}
+			
+			// Invalidate cache for this file
+			client.InvalidateCache(hydfsFile)
 			content, _ := os.ReadFile(localFile)
 			client.conn.Write(content)
 			fmt.Println(resp.Message)
@@ -517,7 +531,7 @@ func main() {
 			}
 		
 			req := Request{
-				Operation: GET,
+				Operation: GETFROM,
 				HyDFSFile: hydfsFile,
 			}
 			

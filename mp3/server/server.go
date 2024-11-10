@@ -12,11 +12,10 @@ To-do (this is everything we need to get 100% on demo):
 -               or download the file onto the server, then send it to the primary server
 -        add logic for replicating DONE!
 -            have primary server act as a client, and send create requests to the replica addresses
-- (20%) replication after failure
--          HALF DONE!!! Just add remove the server from hashRing upon failure and we're set
+- (20%) replication after failure + failure detection DONE!
 -          have servers check if they need to replicate files to other replicas periodically 
 -                 (send replicate req to server, if other server alr has the file, then don't do anything. if not, send file)
-- (24%) client append ordering (from same client to same file)
+- (24%) client append ordering (from same client to same file) DONE!
 -        super super easy DONE!
 - (26%) client concurrent append - append to same file 2/ 4 clients concurrenty. merge. then, show that 2 files on separate replicas are identical
 -        merge all changes to primary?
@@ -25,6 +24,9 @@ To-do (this is everything we need to get 100% on demo):
 package main
 
 import (
+	"io/ioutil"
+	"math/rand"
+	"strconv"
 	"bufio"
 	"crypto/sha1"
 	"encoding/json"
@@ -65,6 +67,7 @@ const (
 	STORE        Operation = "store"
 	GETFROM      Operation = "getfromreplica"
 	LIST_MEM_IDS Operation = "list_mem_ids"
+	SERVER_MERGE Operation = "server_merge"
 )
 
 // Request defines the structure of client requests
@@ -111,6 +114,8 @@ type Server struct {
 	// For simplicity, files map HyDFSFile to list of replicas
 }
 
+var globalServer *Server
+
 // NewServer initializes the server
 func NewServer(address string, allServers []string) *Server {
 	// Ensure .files dir exists, if not create
@@ -143,6 +148,7 @@ func NewServer(address string, allServers []string) *Server {
 
 // initializeHashRing sets up the consistent hashing ring
 func (s *Server) initializeHashRing() {
+	s.hashRing = []uint32{}
 	for _, server := range s.allServers { // each server hashed using SHA1, first 4 bytes converted into uint32 to serve as position on hash ring
 		hash := hashKey(server)
 		s.hashRing = append(s.hashRing, hash)
@@ -150,7 +156,7 @@ func (s *Server) initializeHashRing() {
 	}
 	// sort hash ring for efficient lookup for file replica assignment
 	sort.Slice(s.hashRing, func(i, j int) bool { return s.hashRing[i] < s.hashRing[j] })
-	s.logger.Println("Hash ring initialized with servers:", s.allServers)
+	s.logger.Println("Hash ring (re)initialized with servers:", s.allServers)
 }
 
 // hashKey generates a hash for a given key using SHA1 and returns first 4 bytes as uint32
@@ -168,6 +174,7 @@ func bytesToUint32(b []byte) uint32 {
 
 // initializeMembership initializes the membership list with all servers as active, to monitor server health and managing replicas
 func (s *Server) initializeMembership() {
+	s.membershipList = map[string]MemberInfo{}
 	for _, server := range s.allServers {
 		s.membershipList[server] = MemberInfo{
 			Address:  server,
@@ -346,6 +353,54 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 	}
 }
 
+// HandleServerMerge processes server merge requests
+func (s *Server) HandleServerMerge(req Request, conn net.Conn, reader *bufio.Reader) Response {
+	// s.mutex.Lock()
+	// defer s.mutex.Unlock()
+	
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+
+	resp := Response{
+		Status:  "success",
+		Message: "File merged successfully.",
+	}
+	respData, _ := json.Marshal(resp)
+
+	// Send JSON response + delimiter
+	conn.Write(respData)
+	conn.Write([]byte("\n\n")) // Custom delimiter
+
+	// Read file data from client
+	buffer := make([]byte, 4096)
+	file, _ := os.OpenFile(hydfsPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break // End of file data
+			}
+			fmt.Printf("Failed to read file data: %v\n", err)
+			break
+		}
+
+		// Write data to local HyDFS file
+		_, err = file.Write(buffer[:n])
+		if err != nil {
+			fmt.Printf("Failed to write data to local file: %v\n", err)
+			break
+		}
+	}
+
+	s.logger.Printf("Merged HyDFS file %s", req.HyDFSFile, req.LocalFile)
+
+	// Update file map to maintain mapping of hydfs files to respective replicas
+	// s.files[req.HyDFSFile] = replicas
+	return Response{
+		Status:  "error",
+		Message: "HyDFS file already exists.",
+	}
+}
+
 // replicateFile sends create req to replica server with file content to replicate file, basically the same as a client would send a create
 func (s *Server) replicateFile(replica string, hydfsFile string) {
 	req := Request{
@@ -361,6 +416,18 @@ func (s *Server) replicateFile(replica string, hydfsFile string) {
 		fmt.Printf("aborted replication, unable to connect to server\n")
 		return
 	}
+	localFile := filepath.Join(FILES_DIR, hydfsFile)
+	content, _ := os.ReadFile(localFile)
+	conn.Write(content)
+}
+
+// mergeFile sends create req to replica server with file content to merge file
+func (s *Server) mergeFile(replica string, hydfsFile string) {
+	req := Request{
+		Operation: SERVER_MERGE,
+		HyDFSFile: hydfsFile,
+	}
+	_, _, conn := SendRequest(req, replica)
 	localFile := filepath.Join(FILES_DIR, hydfsFile)
 	content, _ := os.ReadFile(localFile)
 	conn.Write(content)
@@ -414,8 +481,9 @@ func containsAddress(replicas []string, address string) bool {
 // Send JSON response, followed by a delimiter, then the file content
 func (s *Server) HandleGet(req Request, conn net.Conn) Response {
 	replicas := s.getReplicas(req.HyDFSFile)
-	// forward req if this server doesn't contain the file
-	if !containsAddress(replicas, s.address) {
+	// forward req if this server isn't the primary
+	// if !containsAddress(replicas, s.address) {
+	if s.address != replicas[0] {
 		primary := replicas[0]
 		resp := Response{
 			Status:  "redirect",
@@ -461,13 +529,21 @@ func (s *Server) HandleAppend(req Request, conn net.Conn, reader *bufio.Reader) 
 	defer s.mutex.Unlock()
 
 	replicas := s.getReplicas(req.HyDFSFile)
-
-	// // Check if the file exists on the primary replica, if not forward to primary
-	// primary := replicas[0]
-	// if primary != s.address {
-	// 	// Forward the append request to the primary replica
-	// 	return s.forwardRequest(primary, req)
-	// }
+	// forward req if this server isn't the primary
+	primary := replicas[0]
+	if s.address != primary {
+		resp := Response{
+			Status:  "redirect",
+			Message: primary,
+		}
+		respData, _ := json.Marshal(resp)
+		
+		// Send JSON response + delimiter
+		conn.Write(respData)
+		conn.Write([]byte("\n\n")) // Custom delimiter
+		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		return s.forwardRequest(primary, req)
+	}
 
 	// Primary replica handles the append
 	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
@@ -628,38 +704,33 @@ func (s *Server) HandleStore(req Request) Response {
 }
 
 // HandleGetFromReplica processes getfromreplica requests, clients can fetch hydfs file from replica
-func (s *Server) HandleGetFromReplica(req Request) Response {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
-
-	// Check if HyDFS file exists
-	content, err := os.ReadFile(hydfsPath) // read file from .files directory
-	if err != nil {
-		s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
-		return Response{
-			Status:  "error",
-			Message: "HyDFS file does not exist.",
-		}
-	}
-
-	// Write to local file
-	err = os.WriteFile(req.LocalFile, content, 0644)
-	if err != nil {
-		s.logger.Printf("Error writing to local file %s: %v", req.LocalFile, err)
-		return Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to write to local file: %v", err),
-		}
-	}
-
-	s.logger.Printf("Fetched HyDFS file %s from replica to local file %s", req.HyDFSFile, req.LocalFile)
-	return Response{
+// Send JSON response, followed by a delimiter, then the file content
+func (s *Server) HandleGetFromReplica(req Request, conn net.Conn) Response {
+	// Prepare the JSON response
+	resp := Response{
 		Status:  "success",
-		Message: "File fetched from replica successfully.",
+		Message: "File fetched successfully.",
 	}
+	respData, _ := json.Marshal(resp)
+	// Send JSON response + delimiter
+	conn.Write(respData)
+	conn.Write([]byte("\n\n")) // Custom delimiter
+
+	// Now send the file content
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+	content, err := os.ReadFile(hydfsPath)
+	if err != nil {
+		s.logger.Printf("Failed to read file: %v", err)
+		return Response{
+			Status:  "error",
+			Message: "Failed to read file.",
+		}
+	}
+	conn.Write(content) // Send file data
+	fmt.Printf("sending file content: %s\n", content)
+	return resp
 }
+
 
 // HandleListMemIDs processes list_mem_ids requests, list all servers in membership list with ring ids
 func (s *Server) HandleListMemIDs(req Request) Response {
@@ -682,60 +753,36 @@ func (s *Server) HandleListMemIDs(req Request) Response {
 }
 
 // HandleMerge processes merge requests, ensure all replicas of a file are identical
-func (s *Server) HandleMerge(req Request) Response {
+func (s *Server) HandleMerge(req Request, conn net.Conn) Response {
 	// Implementation of merge to ensure all replicas are identical (tbd check back on)
 	// assumes no concurrent operations during merge...
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-
+	
 	replicas := s.getReplicas(req.HyDFSFile)
-
-	// Read content from all replicas, concantenate in hash ring order
-	contents := make(map[string]string)
-	for _, replica := range replicas {
-		if replica == s.address {
-			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
-			content, err := os.ReadFile(hydfsPath)
-			if err != nil {
-				s.logger.Printf("Error reading HyDFS file %s: %v", req.HyDFSFile, err)
-				continue
-			}
-			contents[replica] = string(content)
-		} else {
-			// Forward a special merge request to the replica to get file content
-			mergeReq := Request{
-				Operation: MERGE,
-				HyDFSFile: req.HyDFSFile,
-			}
-			resp := s.forwardRequest(replica, mergeReq)
-			if resp.Status == "success" {
-				contents[replica] = resp.Message
-			}
+	if s.address != replicas[0] {
+		primary := replicas[0]
+		resp := Response{
+			Status:  "redirect",
+			Message: primary,
 		}
+		respData, _ := json.Marshal(resp)
+		
+		// Send JSON response + delimiter
+		conn.Write(respData)
+		conn.Write([]byte("\n\n")) // Custom delimiter
+		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		return s.forwardRequest(primary, req)
 	}
 
-	// Merge contents ensuring ring order
-	mergedContent := ""
-	for _, replica := range replicas {
-		if content, exists := contents[replica]; exists {
-			mergedContent += content
-		}
-	}
 
-	// Write merged content back to all replicas
-	for _, replica := range replicas {
-		if replica == s.address {
-			hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
-			err := os.WriteFile(hydfsPath, []byte(mergedContent), 0644)
-			if err != nil {
-				s.logger.Printf("Error writing merged content to HyDFS file %s: %v", req.HyDFSFile, err)
-				continue
-			}
-		} else {
-			// Send the merged content to the replica
-			go s.sendMergedContent(replica, req.HyDFSFile, mergedContent)
-		}
+
+	// send new version of file to replicas, lock to stop periodic replicating temporarily
+	for _, replica := range replicas[1:] {
+		go s.mergeFile(replica, req.HyDFSFile)
 	}
+	
+	//wait for these
 
 	s.logger.Printf("Merged HyDFS file %s across all replicas.", req.HyDFSFile)
 	return Response{
@@ -791,29 +838,31 @@ func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader
 	// Route the request to the appropriate handler based on the operation
 	switch req.Operation {
 	case CREATE:
-		fmt.Printf("handling create\n")
 		resp = s.HandleCreate(req, conn, reader, false)
-		fmt.Printf("done handling create\n")
 		return
 	case REPLICATE:
-		fmt.Printf("handling replicate\n")
 		resp = s.HandleCreate(req, conn, reader, true)
 		return
 	case GET:
 		resp = s.HandleGet(req, conn)
 		conn.Close()
 		return
+	case GETFROM:
+		resp = s.HandleGetFromReplica(req, conn)
+		conn.Close()
+		return
 	case APPEND:
 		resp = s.HandleAppend(req, conn, reader)
 		return
 	case MERGE:
-		resp = s.HandleMerge(req)
+		resp = s.HandleMerge(req, conn)
+	case SERVER_MERGE:
+		resp = s.HandleServerMerge(req, conn, reader)
+		return
 	case LS:
 		resp = s.HandleLS(req)
 	case STORE:
 		resp = s.HandleStore(req)
-	case GETFROM:
-		resp = s.HandleGetFromReplica(req)
 	case LIST_MEM_IDS:
 		resp = s.HandleListMemIDs(req)
 	default:
@@ -983,16 +1032,802 @@ func (s *Server) Start() {
 
 // main function to start the server
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: go run server.go <server_address> <all_server_addresses_comma_separated>")
-		fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
+	// if len(os.Args) < 3 {
+	// 	fmt.Println("Usage: go run server.go <server_address> <all_server_addresses_comma_separated>")
+	// 	fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
+	// 	return
+	// }
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run server.go <server_address>")
+		fmt.Println("Example: go run server.go localhost:23120")
 		return
 	}
 
-	serverAddress := os.Args[1]
-	allServersArg := os.Args[2]
-	allServers := strings.Split(allServersArg, ",")
+	go swimMain()
 
-	server := NewServer(serverAddress, allServers)
-	server.Start()
+	serverAddress := os.Args[1]
+
+	globalServer = NewServer(serverAddress, []string{})
+	globalServer.Start()
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// failure detector logic
+
+
+type Member struct {
+	Status      string // Status of the member (ALIVE, FAILED)
+	Incarnation int    // incarnation of member
+}
+
+var (
+	membershipList  = map[string]Member{} // key format "address"
+	membershipMutex sync.Mutex            // concurrent access to membership list
+)
+
+var logger *log.Logger
+var pingTimeout = 2 * time.Second
+var introducerAddress = "fa24-cs425-0701.cs.illinois.edu:8080"
+
+var (
+	cycle            = 0
+	timeoutCycles    = 5
+	suspicionEnabled = true
+	suspicionMap     = make(map[string]int) // maps suspected nodes to when they were suspected
+	failedMap        = make(map[string]int) // maps failed nodes to when they were failed, so we can remove them from the list after a certain number of cycles
+	suspicionMutex   sync.Mutex             // concurrent access to suspicionEnabled boolean, just in case since it's global
+	messageDropRate  = 0                    // Message drop rate (percentage from 0 to 100)
+	dropRateMutex    sync.Mutex             // Mutex to protect access to messageDropRate
+)
+
+var (
+	localIdMutex     sync.Mutex
+	localId          = ""
+)
+
+var (
+	bandwidthMutex     sync.Mutex
+	bandwidth          = 0
+)
+
+// helper function to update membership list (safely)
+// pass incarnation -1 when we detect a server down by ourselves
+func updateMemberStatus(id string, status string, incarnation int) {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+	
+	if id == getLocalId() && status != "ALIVE" {
+		membershipList[id] = Member{
+			Status:      "ALIVE",
+			Incarnation: membershipList[id].Incarnation + 1,
+		}
+		logger.Printf("UPDATE: (self) Incarnation number incremented to %d \n", membershipList[id].Incarnation)
+		return
+	}
+
+	if member, exists := membershipList[id]; exists {
+		if incarnation == -1 {
+			incarnation = member.Incarnation
+		}
+		if status == "LEAVE" {
+			membershipList[id] = Member{
+				Status:      status,
+				Incarnation: incarnation,
+			}
+			logger.Printf("LEAVE: %s has left the group.\n", id)
+			return
+		}
+		if member.Status == "LEAVE" {
+			return
+		}
+		if incarnation > member.Incarnation {
+			membershipList[id] = Member{
+				Status:      status,
+				Incarnation: incarnation,
+			}
+			logger.Printf("UPDATE: Successfully updated %s to %s\n", id, status)
+		} else if incarnation == member.Incarnation {
+			if (status == "SUSPECTED" && member.Status == "ALIVE") || (status == "FAILED" && (member.Status == "ALIVE" || member.Status == "SUSPECTED")) {
+				membershipList[id] = Member{
+					Status:      status,
+					Incarnation: incarnation,
+				}
+				suspicionMutex.Lock()
+				if status == "SUSPECTED" {
+					suspicionMap[id] = cycle
+				} else if status == "FAILED" {
+					failedMap[id] = cycle
+				}
+				suspicionMutex.Unlock()
+				logger.Printf("UPDATE: Successfully updated %s to %s\n", id, status)
+			}
+		} else {
+			logger.Printf("Stale update for %s with older incarnation %d\n", id, incarnation)
+		}
+	} else if status == "ALIVE" {
+		membershipList[id] = Member{
+			Status:      status,
+			Incarnation: incarnation,
+		}
+		logger.Printf("JOIN: Added new member, %s, with incarnation %d\n", id, incarnation)
+		addr := getAddressFromId(id)
+		globalServer.allServers = append(globalServer.allServers, addr)
+		globalServer.initializeHashRing() //add mutex locks for whenever we access the hashring
+		globalServer.initializeMembership()
+	}
+	// logger.Printf("membership list after updating: %v\n", membershipList)
+}
+
+func getAddressFromId(id string) string {
+	return strings.Split(id, "`")[0]
+}
+
+
+/*
+handle leave will
+1. update node's status to LEAVE
+2. broadcast the LEAVE status to all nodes
+3. remove node from membership list after some time
+*/
+func handleLeave() {
+	membershipMutex.Lock()
+	if member, exists := membershipList[getLocalId()]; exists {
+		member.Status = "LEAVE"
+		membershipList[getLocalId()] = member
+	}
+	membershipMutex.Unlock()
+
+	for id := range membershipList {
+		if id != getLocalId() {
+			address := getAddressFromId(id)
+			conn, err := net.Dial("udp", address)
+			if err != nil {
+				logger.Printf("Error dialing %s: %v\n", address, err)
+				continue
+			}
+			defer conn.Close()
+
+			// send leave message
+			_, err = conn.Write([]byte(addPiggybackToMessage("LEAVE")))
+			if err != nil {
+				logger.Printf("Error sending LEAVE to %s: %v\n", address, err)
+			}
+			updateBandwidth(len(addPiggybackToMessage("LEAVE")))
+		}
+	}
+
+	time.Sleep(time.Duration(timeoutCycles) * time.Second)
+	logger.Printf("LEAVE: Node %s has left the group. \n", getLocalId())
+	os.Exit(0) // exit the program
+}
+
+/*
+respond to direct pings and handle requests to ping other nodes on behalf of requester
+treat direct and indirect ping requests separately:
+
+	direct PING format: "PING"
+		respond with "ACK" to comfirm node is alive
+	indirect PING format: "PING <target address>"
+		extract target address, then initiate indirect ping with indirect ping handler
+*/
+func listener(wg *sync.WaitGroup, addr *net.UDPAddr) {
+	defer wg.Done() // Signal that this goroutine is done when it exits
+
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		logger.Printf("Error setting up UDP listener: %v\n", err)
+		return
+	}
+	defer conn.Close() // Close the connection when done
+
+	logger.Printf("Listening on %s\n", addr.String())
+
+	buf := make([]byte, 1024)
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			logger.Printf("Error reading from UDP: %v\n", err)
+			return
+		}
+		payload := string(buf[:n])
+		message := strings.Split(payload, "|")[0]
+		// logger.Printf("Received PING from %s, message = %s\n", remoteAddr.String(), message)
+
+		// check if message is direct or indirect ping
+		if message == "PING" {
+			// direct message, send ACK back to sender
+			if shouldDropMessage() {
+				logger.Printf("Dropping message to %s (PING)\n", remoteAddr.String())
+				continue
+			}
+			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("ACK")), remoteAddr)
+			if err != nil {
+				logger.Printf("Error sending ACK to %s: %v\n", remoteAddr.String(), err)
+			} else {
+				updateBandwidth(len(addPiggybackToMessage("ACK")))
+				// logger.Printf("Sending ACK to %s...\n", remoteAddr.String())
+			}
+		} else if len(message) > 5 && message[:5] == "PING " {
+			// indirect PING, get target address and handle with indirectPingHandler
+			targetAddress := message[5:]
+			go indirectPingHandler(targetAddress, remoteAddr.String()) // initiate go routine
+		}
+
+		if message == "JOIN" {
+			// piggyback membership list to sender
+			if shouldDropMessage() {
+				logger.Printf("Dropping message to %s (JOIN)\n", remoteAddr.String())
+				continue
+			}
+			_, err = conn.WriteToUDP([]byte(addPiggybackToMessage("INFO")), remoteAddr)
+			if err != nil {
+				logger.Printf("Error sending INFO to %s: %v\n", remoteAddr.String(), err)
+			} else {
+				updateBandwidth(len(addPiggybackToMessage("INFO")))
+				// logger.Printf("Sending INFO to %s...\n", remoteAddr.String())
+			}
+		}
+		processPiggyback(payload)
+	}
+}
+
+/*
+sends ping to target address, reports back to requester if ACK is received
+*/
+func indirectPingHandler(targetAddress string, requester string) {
+	logger.Printf("Handling indirect PING request for target %s from requester %s\n", targetAddress, requester)
+
+	conn, err := net.Dial("udp", targetAddress)
+	if err != nil {
+		logger.Printf("Error dialing %s: %v\n", targetAddress, err)
+		return
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
+	if err != nil {
+		logger.Printf("Error sending PING to %s: %v", targetAddress, err)
+	}
+	updateBandwidth(len(addPiggybackToMessage("PING")))
+
+	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
+	n, err := conn.Read(buf)
+
+	if err != nil {
+		logger.Printf("Error reading ACK, no ACK from %s\n", targetAddress)
+	} else {
+		// ACK received, inform requester
+		processPiggyback(string(buf[:n]))
+		requesterconn, err := net.Dial("udp", requester)
+		if err != nil {
+			logger.Printf("Error dialing requester %s: %v", requester, err)
+			return
+		}
+		defer requesterconn.Close()
+
+		_, err = requesterconn.Write([]byte(addPiggybackToMessage("INDIRECT_ACK")))
+		if err != nil {
+			logger.Printf("Error sending INDIRECT ACK to %s: %v", requester, err)
+		} else {
+			updateBandwidth(len(addPiggybackToMessage("INDIRECT_ACK")))
+			logger.Printf("Send INDIRECT ACK to %s", requester)
+		}
+	}
+}
+
+/*
+Function to follow ping protocol for a random target in a single cycle
+and implement sucess and marking the node as failed
+*/
+func processPingCycle(wg *sync.WaitGroup, localAddress string) {
+	defer wg.Done() // Signal that this goroutine is done when it exits
+	time.Sleep(4 * time.Second)
+
+	for {
+		// Choose a random address (unsure if we can ping already pinged address)
+		suspicionMutex.Lock()
+		cycle += 1
+		suspicionMutex.Unlock()
+		checkForExpiredNodes()
+
+		id := getRandomAliveNode() // address selected randomly from membershiplist, besides self
+		if id == "" {
+			// logger.Printf("No alive nodes.\n")
+			// printMembershipList()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		res := pingSingleAddress(id)
+		if res != 0 {
+			logger.Printf("No ACK from %s. Attempting indirect ping.\n", id)
+			nodesToPing := randomKAliveNodes(2)
+			var indirectWg sync.WaitGroup
+			indirectACK := false
+			var ackMutex sync.Mutex // protect indirect ACK bool
+			for _, nodeAddress := range nodesToPing {
+				indirectWg.Add(1)
+				go func(node string) {
+					address := getAddressFromId(node)
+					defer indirectWg.Done()
+					conn, err := net.Dial("udp", address)
+					if err != nil {
+						logger.Printf("Error dialing %s: %v\n", node, err)
+						return
+					}
+					defer conn.Close()
+					// Send a request to the node to ping the targetAddress
+					// ie PING vs PING <address>
+					request := fmt.Sprintf("PING %s", address)
+					_, err = conn.Write([]byte(addPiggybackToMessage(request)))
+					if err != nil {
+						return
+					}
+					updateBandwidth(len(addPiggybackToMessage(request)))
+					// Wait for a response (ACK)
+					buf := make([]byte, 1024)
+					conn.SetReadDeadline(time.Now().Add(pingTimeout))
+					n, err := conn.Read(buf)
+					if err != nil {
+						return
+					}
+					processPiggyback(string(buf[:n]))
+
+					ackMutex.Lock()
+					indirectACK = true
+					ackMutex.Unlock()
+				}(nodeAddress)
+			}
+			indirectWg.Wait()
+
+			ackMutex.Lock()
+			if indirectACK {
+				logger.Printf("Received indirect ACK for %s\n", id)
+				updateMemberStatus(id, "ALIVE", -1)
+			} else {
+				suspicionMutex.Lock()
+				if suspicionEnabled {
+					suspicionMutex.Unlock()
+					logger.Printf("SUSPICION DETECTED: No indirect ACK for %s. Marking node as SUSPECTED.\n", id)
+					updateMemberStatus(id, "SUSPECTED", -1)
+				} else {
+					suspicionMutex.Unlock()
+					logger.Printf("FAILURE DETECTED: No indirect ACK for %s. Marking node as FAILED.\n", id)
+					updateMemberStatus(id, "FAILED", -1)
+				}
+			}
+			ackMutex.Unlock()
+		} else {
+			// logger.Printf("Received ACK from %s\n", address)
+			updateMemberStatus(id, "ALIVE", -1)
+		}
+
+		// Sleep for 1 second before the next ping
+		// printMembershipList()
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func removeAddress(allServers []string, addr string) []string {
+	newServers := []string{}
+	for _, serverAddr := range allServers {
+		if serverAddr != addr {
+			newServers = append(newServers, serverAddr)
+		}
+	}
+	return newServers
+}
+
+func checkForExpiredNodes() {
+	suspicionMutex.Lock()
+
+	for node, markedCycle := range suspicionMap {
+		// logger.Printf("markedCycle: %d, timeoutCycles: %d, currentCycle: %d\n", markedCycle, timeoutCycles, cycle)
+		if markedCycle+timeoutCycles <= cycle {
+			suspicionMutex.Unlock()
+			logger.Printf("Grace period for %s expired, marking node as FAILED\n", node)
+			// UPDATE THE HASHRING!!!!!
+			addr := getAddressFromId(node)
+			// remove addr from server.allServers[]
+			globalServer.allServers = removeAddress(globalServer.allServers, addr)
+			globalServer.initializeHashRing() //add mutex locks for whenever we access the hashring
+			globalServer.initializeMembership()
+			updateMemberStatus(node, "FAILED", -1)
+			suspicionMutex.Lock()
+			delete(suspicionMap, node)
+		}
+	}
+
+	for node, markedCycle := range failedMap {
+		if markedCycle+timeoutCycles <= cycle {
+		// if markedCycle <= cycle {
+			membershipMutex.Lock()
+			delete(membershipList, node)
+			membershipMutex.Unlock()
+			// logger.Printf("Grace period for %s expired, evicting node from membership list\n", node)
+			delete(failedMap, node)
+		}
+	}
+	suspicionMutex.Unlock()
+}
+
+// function to ping a given address, and then return 0 if recieved ACK, 1 if no ACK
+func pingSingleAddress(id string) int {
+	// Attempt to send a ping
+	// logger.Printf("Sending PING to %s...\n", address)
+	address := getAddressFromId(id)
+
+	// Create a UDP connection
+	conn, err := net.Dial("udp", address)
+	if err != nil {
+		logger.Printf("Error dialing %s: %v\n", address, err)
+		return 1
+	}
+	defer conn.Close()
+
+	if shouldDropMessage() {
+		logger.Printf("Dropping PING to %s\n", address)
+		return 1
+	}
+
+	// Send a PING message
+	_, err = conn.Write([]byte(addPiggybackToMessage("PING")))
+	if err != nil {
+		logger.Printf("Error sending PING to %s: %v\n", address, err)
+		return 1
+	}
+	updateBandwidth(len(addPiggybackToMessage("PING")))
+
+	// Set a deadline for receiving a response
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
+
+	// Read the response
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return 1
+	} else {
+		processPiggyback(string(buf[:n]))
+		return 0
+	}
+}
+
+// function to ping introducer for intial contact and membership list
+func pingIntroducer() int {
+	// Attempt to send a JOIN ping
+	logger.Printf("Sending JOIN to introducer...\n")
+
+	// Create a UDP connection
+	conn, err := net.Dial("udp", introducerAddress)
+	if err != nil {
+		logger.Printf("Error dialing %s: %v\n", introducerAddress, err)
+		return 1
+	}
+	defer conn.Close()
+
+	if shouldDropMessage() {
+		logger.Printf("Dropping JOIN to %s\n", introducerAddress)
+		return 1
+	}
+
+	// Send a JOIN message
+	_, err = conn.Write([]byte(addPiggybackToMessage("JOIN")))
+	if err != nil {
+		logger.Printf("Error sending JOIN to %s: %v\n", introducerAddress, err)
+		return 1
+	}
+	updateBandwidth(len(addPiggybackToMessage("JOIN")))
+
+	// Set a deadline for receiving a response
+	conn.SetReadDeadline(time.Now().Add(pingTimeout))
+
+	// Read the response
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return 1
+	} else {
+		processPiggyback(string(buf[:n]))
+		return 0
+	}
+}
+
+func printSuspectedNodes() {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	logger.Printf("Suspected Nodes:\n")
+	count := 0
+	for address, member := range membershipList {
+		if member.Status == "SUSPECTED" {
+			count += 1
+			logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+		}
+	}
+	if count == 0 {
+		logger.Printf("None\n")
+	}
+}
+
+func printMembershipList() {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	logger.Printf("Current Membership List:\n")
+	for address, member := range membershipList {
+		logger.Printf("%s, %s, %d\n", address, member.Status, member.Incarnation)
+	}
+}
+
+func printSelf() {
+	logger.Printf("self: %s\n", getLocalId())
+}
+
+func getRandomAliveNode() string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	aliveNodes := []string{}
+	for id, member := range membershipList {
+		if member.Status == "ALIVE" && id != getLocalId() {
+			aliveNodes = append(aliveNodes, id)
+		}
+	}
+	if len(aliveNodes) == 0 {
+		return ""
+	}
+
+	randomSource := rand.NewSource(time.Now().UnixNano())
+	rng := rand.New(randomSource)
+
+	return aliveNodes[rng.Intn(len(aliveNodes))]
+}
+
+func randomKAliveNodes(n int) []string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	aliveNodes := []string{}
+	for id, member := range membershipList {
+		if member.Status == "ALIVE" && id != getLocalId() {
+			aliveNodes = append(aliveNodes, id)
+		}
+	}
+
+	// Set to track selected indices
+	selectedIndices := make(map[int]struct{})
+	var selectedNodes []string
+
+	randomSource := rand.NewSource(time.Now().UnixNano()) // rand.seed is deprecated
+	rng := rand.New(randomSource)
+
+	for len(selectedNodes) < n && len(selectedIndices) < len(aliveNodes) {
+		// Generate a random index
+		randomIndex := rng.Intn(len(aliveNodes))
+
+		// Check if this index has already been selected
+		if _, exists := selectedIndices[randomIndex]; !exists {
+			// Mark this index as selected
+			selectedIndices[randomIndex] = struct{}{}
+			// Append the corresponding member to the selectedNodes slice
+			selectedNodes = append(selectedNodes, aliveNodes[randomIndex])
+		}
+	}
+
+	return selectedNodes
+}
+
+// Function to determine if a message should be dropped based on the drop rate
+func shouldDropMessage() bool {
+	dropRateMutex.Lock()
+	defer dropRateMutex.Unlock()
+
+	if messageDropRate == 0 {
+		return false
+	}
+	return rand.Intn(100) < messageDropRate
+}
+
+// Function to process incoming messages and extract piggyback information
+func processPiggyback(message string) {
+	// Assume message is formatted like "PING|id|member1|status1|incarnation1|member2|status2|incarnation2|..."
+	parts := strings.Split(message, "|")
+	if len(parts) < 4 {
+		fmt.Println("Invalid message format for piggyback.")
+		return
+	}
+
+	// Iterate over parts and update membership list
+	for i := 1; i < len(parts); i += 3 {
+		id := parts[i]
+		status := parts[i+1]
+		incarnationStr := parts[i+2]
+		// logger.Printf("Member list info: %s, %s, %s\n", address, status, incarnationStr)
+
+		// Parse incarnation number
+		incarnation, err := strconv.Atoi(incarnationStr)
+		if err != nil {
+			logger.Printf("Error parsing incarnation for %s: %v\n", id, err)
+			continue
+		}
+
+		// Update membership status
+		updateMemberStatus(id, status, incarnation)
+
+	}
+}
+
+
+// Function to add the piggyback message containing the membership list to the message
+func addPiggybackToMessage(message string) string {
+	membershipMutex.Lock()
+	defer membershipMutex.Unlock()
+
+	var piggyback strings.Builder
+	piggyback.WriteString(message)
+	for address, member := range membershipList {
+		piggyback.WriteString(fmt.Sprintf("|%s|%s|%d", address, member.Status, member.Incarnation))
+	}
+
+	return piggyback.String()
+}
+
+
+func handleCLICommands(wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		// Process commands here
+		switch input {
+		case "list_mem":
+			printMembershipList()
+		case "list_self":
+			printSelf()
+		case "leave":
+			handleLeave()
+		case "enable_sus":
+			suspicionMutex.Lock()
+			suspicionEnabled = true
+			logger.Printf("Suspicion Enabled\n")
+			suspicionMutex.Unlock()
+		case "disable_sus":
+			suspicionMutex.Lock()
+			suspicionEnabled = false
+			logger.Printf("Suspicion Disabled\n")
+			suspicionMutex.Unlock()
+		case "status_sus":
+			suspicionMutex.Lock()
+			if suspicionEnabled {
+				logger.Printf("Suspicion is enabled\n")
+			} else {
+				logger.Printf("Suspicion is disabled\n")
+			}
+			suspicionMutex.Unlock()
+		case "???": // (Mandatory, not optional) Display a suspected node immediately to stdout at the VM terminal of the suspecting node.
+			//
+		case "list_suspected_nodes":
+			printSuspectedNodes()
+		case "drop_rate":
+			dropRateMutex.Lock()
+			logger.Printf("Current message drop rate: %d%%\n", messageDropRate)
+			dropRateMutex.Unlock()
+		case "set_drop_rate":
+			fmt.Println("Enter new drop rate (0-100):")
+			rateInput, _ := reader.ReadString('\n')
+			rateInput = strings.TrimSpace(rateInput)
+			newRate, err := strconv.Atoi(rateInput)
+			if err != nil || newRate < 0 || newRate > 100 {
+				fmt.Println("Invalid drop rate. Please enter a value between 0 and 100.")
+			} else {
+				dropRateMutex.Lock()
+				messageDropRate = newRate
+				dropRateMutex.Unlock()
+				logger.Printf("Message drop rate set to: %d%%\n", newRate)
+			}
+		default:
+			fmt.Printf("Unknown command: %s\n", input)
+		}
+	}
+}
+
+func getLocalId() string {
+	localIdMutex.Lock()
+	defer localIdMutex.Unlock()
+
+	return localId
+}
+
+func getBandwidth() int {
+	bandwidthMutex.Lock()
+	defer bandwidthMutex.Unlock()
+
+	return bandwidth
+}
+
+func updateBandwidth(val int) {
+	bandwidthMutex.Lock()
+	defer bandwidthMutex.Unlock()
+
+	bandwidth += val
+}
+
+func swimMain() {
+	
+	var wg sync.WaitGroup
+
+	const localAddressFile = "./../../mp2/localaddr.txt"
+	data, _ := ioutil.ReadFile(localAddressFile)
+	localAddress := string(data)
+	logFile := "./../../mp1/swim.log"
+	file, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	multiWriter := io.MultiWriter(os.Stdout, file)
+	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
+
+
+	const versionFile = "./../../mp2/version.txt"
+	versionNumber := 0
+	data, _ = ioutil.ReadFile(versionFile)
+	if data != nil {
+		versionNumber, _ = strconv.Atoi(string(data))
+		versionNumber++ // Increment the version number
+	}
+	ioutil.WriteFile(versionFile, []byte(strconv.Itoa(versionNumber)), 0644)
+
+	// No need to know whether it is introducer, because only the introducer will get
+	// new node join requests
+	var isIntroducer = false
+	if localAddress == introducerAddress {
+		isIntroducer = true
+	}
+
+	addr, _ := net.ResolveUDPAddr("udp", localAddress)
+
+	localIdMutex.Lock()
+	localId = localAddress + "`" + strconv.Itoa(versionNumber)
+	localIdMutex.Unlock()
+	
+	updateMemberStatus(getLocalId(), "ALIVE", 0) // Add self to membership list
+
+	wg.Add(1)
+	go listener(&wg, addr) // Start our ACK goroutine
+
+	if !isIntroducer {
+		for pingIntroducer() != 0 { // Ask introducer to introduce
+			logger.Printf("Unable to contact introducer at %s, retrying...\n", introducerAddress)
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	wg.Add(1)
+	go processPingCycle(&wg, localAddress)
+
+	wg.Add(1)
+	go handleCLICommands(&wg)
+
+	wg.Wait()
+	select {}
 }
