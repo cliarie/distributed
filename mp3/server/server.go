@@ -407,13 +407,13 @@ func (s *Server) replicateFile(replica string, hydfsFile string) {
 		Operation: REPLICATE,
 		HyDFSFile: hydfsFile,
 	}
-	fmt.Printf("sending replicate req to %s\n", replica)
+	// fmt.Printf("sending replicate req to %s\n", replica)
 	resp, _, conn := SendRequest(req, replica)
 	if resp.Status == "exists" {
-		fmt.Printf("aborted replication, file exists\n")
+		// fmt.Printf("aborted replication, file exists\n")
 		return
 	} else if resp.Status == "error" {
-		fmt.Printf("aborted replication, unable to connect to server\n")
+		// fmt.Printf("aborted replication, unable to connect to server\n")
 		return
 	}
 	localFile := filepath.Join(FILES_DIR, hydfsFile)
@@ -934,7 +934,7 @@ func (s *Server) handleClient(conn net.Conn) {
 				break
 			}
 		}
-		fmt.Printf("extra bytes: %d\n", reader.Buffered())
+		// fmt.Printf("extra bytes: %d\n", reader.Buffered())
 
 		fmt.Printf("read from client: %s\n", jsonData)
 		s.processRequest(jsonData, conn, reader)
