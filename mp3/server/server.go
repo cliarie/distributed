@@ -280,7 +280,7 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 			// Send JSON response + delimiter
 			conn.Write(respData)
 			conn.Write([]byte("\n\n")) // Custom delimiter
-			fmt.Printf("Not primary address, forwarding to %s\n", primary)
+			// fmt.Printf("Not primary address, forwarding to %s\n", primary)
 			return s.forwardRequest(primary, req)
 		}
 	}
@@ -494,7 +494,7 @@ func (s *Server) HandleGet(req Request, conn net.Conn) Response {
 		// Send JSON response + delimiter
 		conn.Write(respData)
 		conn.Write([]byte("\n\n")) // Custom delimiter
-		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		// fmt.Printf("Not primary address, forwarding to %s\n", primary)
 		return s.forwardRequest(primary, req)
 	}
 
@@ -540,7 +540,7 @@ func (s *Server) HandleAppend(req Request, conn net.Conn, reader *bufio.Reader) 
 		// Send JSON response + delimiter
 		conn.Write(respData)
 		conn.Write([]byte("\n\n")) // Custom delimiter
-		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		// fmt.Printf("Not primary address, forwarding to %s\n", primary)
 		return s.forwardRequest(primary, req)
 	}
 
@@ -769,7 +769,7 @@ func (s *Server) HandleMerge(req Request, conn net.Conn) Response {
 		// Send JSON response + delimiter
 		conn.Write(respData)
 		conn.Write([]byte("\n\n")) // Custom delimiter
-		fmt.Printf("Not primary address, forwarding to %s\n", primary)
+		// fmt.Printf("Not primary address, forwarding to %s\n", primary)
 		return s.forwardRequest(primary, req)
 	}
 
@@ -936,7 +936,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 		// fmt.Printf("extra bytes: %d\n", reader.Buffered())
 
-		fmt.Printf("read from client: %s\n", jsonData)
+		// fmt.Printf("read from client: %s\n", jsonData)
 		s.processRequest(jsonData, conn, reader)
 	// }
 }
