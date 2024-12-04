@@ -30,6 +30,8 @@ message TaskAssignment{
     string operator = 2;
     string executable = 3;
     int32 num_tasks = 4;
+    string src_file = 5;
+    string dest_file = 6;
 }
 
 message TaskResponse{
@@ -50,6 +52,8 @@ message StatusResponse{
 message TaskData{
     string task_id = 1;
     repeated Tuple tuples = 2;
+    string src_file = 3;  
+    string dest_file = 4; 
 }
 
 message ExecutionResponse {

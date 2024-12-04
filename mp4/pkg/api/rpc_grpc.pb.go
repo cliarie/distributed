@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: pkg/api/rpc.proto
+// source: rpc.proto
 
 package api
 
@@ -193,7 +193,7 @@ var LeaderService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "pkg/api/rpc.proto",
+	Metadata: "rpc.proto",
 }
 
 const (
@@ -333,5 +333,5 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "pkg/api/rpc.proto",
+	Metadata: "rpc.proto",
 }

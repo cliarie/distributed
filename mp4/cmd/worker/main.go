@@ -1,3 +1,5 @@
+// registers with the leader, send periodic heartbeats to leader
+// waits for task assignments from leader
 package main
 
 import (
@@ -12,6 +14,7 @@ import (
 
 type workerServer struct {
 	api.UnimplementedWorkerServiceServer
+	workerID string
 }
 
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
@@ -39,7 +42,9 @@ func main() {
 			log.Fatalf("Failed to listen on port 50052: %v", err)
 		}
 		s := grpc.NewServer()
-		api.RegisterWorkerServiceServer(s, &workerServer{})
+		api.RegisterWorkerServiceServer(s, &workerServer{
+			workerID: "worker1",
+		})
 		log.Println("worker service server running on port 50052")
 		if err := s.Serve(lis); err != nil {
 			log.Fatalf("Failed to serve worker service: %v", err)
