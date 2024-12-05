@@ -21,7 +21,7 @@ To-do (this is everything we need to get 100% on demo):
 -        merge all changes to primary
 -        then overwrite replicas from primary
 */
-package server
+package main
 
 import (
 	"bufio"
@@ -1033,26 +1033,26 @@ func (s *Server) Start() {
 }
 
 // main function to start the server
-// func main() {
-// 	// if len(os.Args) < 3 {
-// 	// 	fmt.Println("Usage: go run server.go <server_address> <all_server_addresses_comma_separated>")
-// 	// 	fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
-// 	// 	return
-// 	// }
-// 	if len(os.Args) != 1 {
-// 		fmt.Println("Usage: go run server.go")
-// 		return
-// 	}
+func main() {
+	// if len(os.Args) < 3 {
+	// 	fmt.Println("Usage: go run server.go <server_address> <all_server_addresses_comma_separated>")
+	// 	fmt.Println("Example: go run server.go localhost:23120 localhost:23120,localhost:23121,localhost:23122")
+	// 	return
+	// }
+	if len(os.Args) != 1 {
+		fmt.Println("Usage: go run server.go")
+		return
+	}
 
-// 	const localAddressFile = "./../../mp2/localaddr.txt"
-// 	data, _ := ioutil.ReadFile(localAddressFile)
-// 	localAddress := string(data)
-// 	serverAddress := localAddress
+	const localAddressFile = "./../../../../mp2/localaddr.txt"
+	data, _ := ioutil.ReadFile(localAddressFile)
+	localAddress := string(data)
+	serverAddress := localAddress
 
-// 	go swimMain()
-// 	globalServer = NewServer(serverAddress, []string{})
-// 	globalServer.Start()
-// }
+	go swimMain()
+	globalServer = NewServer(serverAddress, []string{})
+	globalServer.Start()
+}
 
 // failure detector logic
 
@@ -1758,15 +1758,15 @@ func swimMain() {
 
 	var wg sync.WaitGroup
 
-	const localAddressFile = "./../../mp2/localaddr.txt"
+	const localAddressFile = "./../../../../mp2/localaddr.txt"
 	data, _ := ioutil.ReadFile(localAddressFile)
 	localAddress := string(data)
-	logFile := "./../../mp1/swim.log"
+	logFile := "./../../../../mp1/swim.log"
 	file, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
 
-	const versionFile = "./../../mp2/version.txt"
+	const versionFile = "./../../../../mp2/version.txt"
 	versionNumber := 0
 	data, _ = ioutil.ReadFile(versionFile)
 	if data != nil {

@@ -1,0 +1,6 @@
+OBJECTID,Sign_Type,Size,Sign_Post_Type,Category,Year,City
+1,Stop Sign,"24x24",Punched Telespar,Regulatory,2015,Champaign
+2,Yield Sign,"30x30",Streetlight,Regulatory,2016,Champaign
+3,No Outlet,"30x30",Punched Telespar,Warning,2010,Urbana
+4,Speed Limit,"18x24",Unpunched Telespar,Regulatory,2017,Champaign
+5,Pedestrian Crossing,"24x24",Punched Telespar,Warning,2020,Urbana
