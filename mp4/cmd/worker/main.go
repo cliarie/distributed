@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -112,11 +111,7 @@ func main() {
 		workerAddress = envAddress
 	}
 
-	// Start gRPC server
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
 			log.Fatalf("Failed to listen on port %d: %v", port, err)
@@ -131,7 +126,6 @@ func main() {
 			log.Fatalf("Failed to serve worker service: %v", err)
 		}
 	}()
-	wg.Wait() // Wait for server to start
 
 	// Connect to leader
 	leaderAddress := os.Getenv("LEADER_ADDRESS")
