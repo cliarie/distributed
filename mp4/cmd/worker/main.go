@@ -10,6 +10,7 @@ import (
 	"mp4/pkg/hydfs/client"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,20 @@ type workerServer struct {
 	hydfsClient *client.Client
 }
 
+func processWithExecutable(executable string, lines []string) []string {
+	input := strings.Join(lines, "\n")
+	cmd := exec.Command(executable)
+	cmd.Stdin = strings.NewReader(input)
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Error running %s: %v", executable, err)
+		return nil
+	}
+
+	return strings.Split(strings.TrimSpace(string(output)), "\n")
+}
+
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
 	resp, _ := s.hydfsClient.SendRequest(client.Request{
 		Operation: client.GET,
@@ -33,26 +48,18 @@ func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) 
 	}
 
 	lines := strings.Split(resp.Message, "\n")
-	results := []string{}
-	for _, line := range lines {
-		parts := strings.SplitN(line, ",", 2) // Assume <key, value> format
-		if len(parts) < 2 {
-			continue
-		}
-		key, value := parts[0], parts[1]
+	transformedLines := processWithExecutable(taskData.Executable, lines)
 
-		// switch taskData.Operator {
-		// case "transform":
-		// 	results = append(results, Transform(key, value))
-		// case "filter":
-		// 	if transformed := FilteredTransform(key, value, req.Params[0]); transformed != "" {
-		// 		results = append(results, transformed)
-		// 	}
-		// case "aggregate":
-		// 	results = AggregateByKey(lines)
-		// 	break // Aggregation processes all lines at once
-		// }
+	resp, _ = s.hydfsClient.SendRequest(client.Request{
+		Operation: client.APPEND,
+		HyDFSFile: taskData.DestFile,
+		Content:   strings.Join(transformedLines, "\n"),
+	})
+	if resp.Status == "error" {
+		return nil, fmt.Errorf("Failed to append results")
 	}
+
+	log.Printf("Task %s processed and results appended to %s", taskData.TaskId, taskData.DestFile)
 
 	log.Printf("received task: taskID=%s, num tuples=%d", taskData.TaskId, len(taskData.Tuples))
 

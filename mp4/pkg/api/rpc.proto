@@ -54,6 +54,7 @@ message TaskData{
     repeated Tuple tuples = 2;
     string src_file = 3;  
     string dest_file = 4; 
+    string executable = 5;
 }
 
 message ExecutionResponse {
