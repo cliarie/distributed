@@ -172,7 +172,7 @@ func (s *leaderServer) monitorHeartbeats() {
 
 func main() {
 	// nodes := loadNodes("nodes.config")
-	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
 	defer hydfsClient.Close()
 
 	lis, err := net.Listen("tcp", ":50051")

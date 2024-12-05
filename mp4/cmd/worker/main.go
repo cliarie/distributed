@@ -89,7 +89,7 @@ func parseWorkerIndex(workerIndex string) int {
 }
 
 func main() {
-	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
 	defer hydfsClient.Close()
 
 	// Get hostname to use as part of the WorkerID
