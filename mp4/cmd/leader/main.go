@@ -8,6 +8,8 @@ import (
 	"log"
 	"mp4/pkg/api"
 	"net"
+	"os"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -15,15 +17,17 @@ import (
 )
 
 // implements api.LeaderServiceServer
-type server struct {
+type leaderServer struct {
 	api.UnimplementedLeaderServiceServer
-	workers  map[string]string
+	workers  map[string]string // workerid -> address
+	tasks    map[string]string // taskid -> workerid
 	taskLock sync.Mutex
 	mu       sync.Mutex
+	nodes    []string // list of nodes, see nodes.config
 }
 
 // LeaderService.RegisterWorker
-func (s *server) RegisterWorker(ctx context.Context, workerInfo *api.WorkerInfo) (*api.RegisterResponse, error) {
+func (s *leaderServer) RegisterWorker(ctx context.Context, workerInfo *api.WorkerInfo) (*api.RegisterResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.workers[workerInfo.WorkerId] = workerInfo.Address
@@ -35,7 +39,7 @@ func (s *server) RegisterWorker(ctx context.Context, workerInfo *api.WorkerInfo)
 	}, nil
 }
 
-func (s *server) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignment) (*api.TaskResponse, error) {
+func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignment) (*api.TaskResponse, error) {
 	s.taskLock.Lock()
 	defer s.taskLock.Unlock()
 
@@ -80,6 +84,38 @@ func (s *server) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignm
 	}, nil
 }
 
+// Reassign tasks to a different worker
+func (s *leaderServer) reassignTask(taskID, srcFile, destFile string) {
+	log.Printf("Reassigning task %s", taskID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for workerID, address := range s.workers {
+		if _, exists := s.tasks[taskID]; exists && s.tasks[taskID] == workerID {
+			continue
+		}
+		log.Printf("Reassigning task %s to worker %s", taskID, workerID)
+		client, conn, err := connectToWorker(address)
+		if err != nil {
+			log.Printf("Failed to connect to worker %s: %v", workerID, err)
+			continue
+		}
+		defer conn.Close()
+
+		_, err = client.ExecuteTask(context.Background(), &api.TaskData{
+			TaskId:   taskID,
+			SrcFile:  srcFile,
+			DestFile: destFile,
+		})
+		if err == nil {
+			s.tasks[taskID] = workerID
+			return
+		}
+		log.Printf("Worker %s failed: %v", workerID, err)
+	}
+}
+
 func partitionInput(numTasks int32, srcFile string) []string {
 	partitions := make([]string, numTasks)
 	for i := int32(0); i < numTasks; i++ {
@@ -107,7 +143,7 @@ func connectToWorker(address string) (api.WorkerServiceClient, *grpc.ClientConn,
 	client := api.NewWorkerServiceClient(conn)
 	return client, conn, nil
 }
-func (s *server) ReportTaskStatus(ctx context.Context, taskStatus *api.TaskStatus) (*api.StatusResponse, error) {
+func (s *leaderServer) ReportTaskStatus(ctx context.Context, taskStatus *api.TaskStatus) (*api.StatusResponse, error) {
 	log.Printf("Task Status Reported: TaskID=%s, Status=%s", taskStatus.TaskId, taskStatus.Status)
 	// TODO: Implement task status handling
 	return &api.StatusResponse{
@@ -116,15 +152,27 @@ func (s *server) ReportTaskStatus(ctx context.Context, taskStatus *api.TaskStatu
 	}, nil
 }
 
+func loadNodes(configFile string) []string {
+	file, err := os.ReadFile(configFile)
+	if err != nil {
+		log.Fatalf("Failed to read nodes config: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(file)), "\n")
+}
+
 func main() {
+	nodes := loadNodes("nodes.config")
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
-	api.RegisterLeaderServiceServer(s, &server{
+	leader := &leaderServer{
 		workers: make(map[string]string),
-	})
+		tasks:   make(map[string]string),
+		nodes:   nodes,
+	}
+	api.RegisterLeaderServiceServer(s, leader)
 	log.Println("LeaderService Server running on port 50051...")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
