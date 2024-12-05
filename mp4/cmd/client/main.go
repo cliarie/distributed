@@ -30,13 +30,13 @@ func main() {
 	}
 
 	jobID := generateJobID()
-	op1Exe := args[1]
-	op2Exe := args[2]
-	srcFile := args[3]
-	destFile := args[4]
-	numTasks := args[5]
+	op1Exe := args[0]
+	op2Exe := args[1]
+	srcFile := args[2]
+	destFile := args[3]
+	numTasks := args[4]
 
-	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
 	defer hydfsClient.Close()
 
 	resp, _ := hydfsClient.SendRequest(client.Request{
