@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"mp4/pkg/api"
 	"mp4/pkg/hydfs/client"
@@ -27,11 +29,12 @@ func main() {
 		log.Fatalf("Invalid input: Usage RainStorm <op1_exe> <op2_exe> <hydfs_src_file> <hydfs_dest_filename> <num_tasks>")
 	}
 
-	op1Exe := args[0]
-	op2Exe := args[1]
-	srcFile := args[2]
-	destFile := args[3]
-	numTasks := args[4]
+	jobID := generateJobID()
+	op1Exe := args[1]
+	op2Exe := args[2]
+	srcFile := args[3]
+	destFile := args[4]
+	numTasks := args[5]
 
 	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
 	defer hydfsClient.Close()
@@ -55,7 +58,7 @@ func main() {
 
 	// submit job
 	taskAssignment := &api.TaskAssignment{
-		TaskId:     "job-1", // generate unique ID for each job
+		TaskId:     jobID, // generate unique ID for each job
 		Operator:   op1Exe,
 		Executable: op2Exe,
 		NumTasks:   parseNumTasks(numTasks),
@@ -75,4 +78,9 @@ func parseNumTasks(numTasks string) int32 {
 		log.Fatalf("Invalid num_tasks: must be a positive integer")
 	}
 	return int32(parsed)
+}
+
+func generateJobID() string {
+	rand.Seed(time.Now().UnixNano())
+	return fmt.Sprintf("job-%d", rand.Intn(1000000))
 }

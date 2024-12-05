@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -23,6 +24,36 @@ type workerServer struct {
 }
 
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
+	resp, _ := s.hydfsClient.SendRequest(client.Request{
+		Operation: client.GET,
+		HyDFSFile: taskData.SrcFile,
+	})
+	if resp.Status == "error" {
+		return nil, fmt.Errorf("Failed to fetch partition: %s", resp.Message)
+	}
+
+	lines := strings.Split(resp.Message, "\n")
+	results := []string{}
+	for _, line := range lines {
+		parts := strings.SplitN(line, ",", 2) // Assume <key, value> format
+		if len(parts) < 2 {
+			continue
+		}
+		key, value := parts[0], parts[1]
+
+		// switch taskData.Operator {
+		// case "transform":
+		// 	results = append(results, Transform(key, value))
+		// case "filter":
+		// 	if transformed := FilteredTransform(key, value, req.Params[0]); transformed != "" {
+		// 		results = append(results, transformed)
+		// 	}
+		// case "aggregate":
+		// 	results = AggregateByKey(lines)
+		// 	break // Aggregation processes all lines at once
+		// }
+	}
+
 	log.Printf("received task: taskID=%s, num tuples=%d", taskData.TaskId, len(taskData.Tuples))
 
 	log.Printf("completed task: taskID=%s", taskData.TaskId)
