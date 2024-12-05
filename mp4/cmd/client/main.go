@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
 	"mp4/pkg/api"
+	"mp4/pkg/hydfs/client"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -31,6 +33,17 @@ func main() {
 	destFile := args[3]
 	numTasks := args[4]
 
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	defer hydfsClient.Close()
+
+	resp, _ := hydfsClient.SendRequest(client.Request{
+		Operation: client.GET,
+		HyDFSFile: srcFile,
+	})
+	if resp.Status == "error" {
+		log.Fatalf("Input file validation failed: %s", resp.Message)
+	}
+
 	// connect to the leader
 	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -49,11 +62,11 @@ func main() {
 		SrcFile:    srcFile,
 		DestFile:   destFile,
 	}
-	resp, err := client.AssignTask(context.Background(), taskAssignment)
+	_, err = client.AssignTask(context.Background(), taskAssignment)
 	if err != nil {
 		log.Fatalf("Job submission failed: %v", err)
 	}
-	log.Printf("Job submitted: success=%v, message=%v", resp.Success, resp.Message)
+	fmt.Printf("Job submitted success, message=%v", resp.Message)
 }
 
 func parseNumTasks(numTasks string) int32 {

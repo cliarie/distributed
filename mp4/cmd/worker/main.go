@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"mp4/pkg/api"
+	"mp4/pkg/hydfs/client"
 	"net"
 	"os"
 	"strconv"
@@ -17,7 +18,8 @@ import (
 
 type workerServer struct {
 	api.UnimplementedWorkerServiceServer
-	workerID string
+	workerID    string
+	hydfsClient *client.Client
 }
 
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
@@ -47,6 +49,8 @@ func parseWorkerIndex(workerIndex string) int {
 }
 
 func main() {
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	defer hydfsClient.Close()
 	// Get hostname to use as part of the WorkerID
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -69,7 +73,8 @@ func main() {
 		}
 		s := grpc.NewServer()
 		api.RegisterWorkerServiceServer(s, &workerServer{
-			workerID: workerID,
+			workerID:    workerID,
+			hydfsClient: hydfsClient,
 		})
 		log.Printf("WorkerService Server %s running on port %d", workerID, port)
 		if err := s.Serve(lis); err != nil {

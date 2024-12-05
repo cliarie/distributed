@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"mp4/pkg/api"
+	"mp4/pkg/hydfs/client"
 	"net"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -19,11 +21,12 @@ import (
 // implements api.LeaderServiceServer
 type leaderServer struct {
 	api.UnimplementedLeaderServiceServer
-	workers  map[string]string // workerid -> address
-	tasks    map[string]string // taskid -> workerid
-	taskLock sync.Mutex
-	mu       sync.Mutex
-	nodes    []string // list of nodes, see nodes.config
+	workers     map[string]string // workerid -> address
+	tasks       map[string]string // taskid -> workerid
+	taskLock    sync.Mutex
+	mu          sync.Mutex
+	hydfsClient *client.Client
+	// nodes    []string // list of nodes, see nodes.config
 }
 
 // LeaderService.RegisterWorker
@@ -160,18 +163,33 @@ func loadNodes(configFile string) []string {
 	return strings.Split(strings.TrimSpace(string(file)), "\n")
 }
 
+func (s *leaderServer) monitorHeartbeats() {
+	for {
+		time.Sleep(10 * time.Second)
+		// Logic to check heartbeats and detect failures
+	}
+}
+
 func main() {
-	nodes := loadNodes("nodes.config")
+	// nodes := loadNodes("nodes.config")
+	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:23120")
+	defer hydfsClient.Close()
+
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
 	leader := &leaderServer{
-		workers: make(map[string]string),
-		tasks:   make(map[string]string),
-		nodes:   nodes,
+		workers:     make(map[string]string),
+		tasks:       make(map[string]string),
+		hydfsClient: hydfsClient,
+		// nodes:   nodes,
 	}
+
+	// TODO:
+	// go leader.monitorHeartbeats()
+
 	api.RegisterLeaderServiceServer(s, leader)
 	log.Println("LeaderService Server running on port 50051...")
 	if err := s.Serve(lis); err != nil {
