@@ -26,6 +26,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -132,7 +133,30 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 	}
 	conn.Write(data)
 	conn.Write([]byte("\n\n")) // Custom delimiter
+	if req.Operation == "create" && req.LocalFile != "" {
+		// Open the local file
+		file, err := os.Open(req.LocalFile)
+		if err != nil {
+			return Response{Status: "error", Message: "Failed to open local file."}, nil
+		}
+		defer file.Close()
 
+		// Stream file content to the server
+		buffer := make([]byte, 4096)
+		for {
+			n, err := file.Read(buffer)
+			if err != nil {
+				if err == io.EOF {
+					break // End of file
+				}
+				return Response{Status: "error", Message: "Failed to read local file."}, nil
+			}
+			_, writeErr := conn.Write(buffer[:n])
+			if writeErr != nil {
+				return Response{Status: "error", Message: "Failed to write file content to server."}, nil
+			}
+		}
+	}
 	// Read JSON response until the delimiter
 	reader := bufio.NewReader(conn)
 	jsonData := make([]byte, 0, 4096) // Buffer to store the JSON response

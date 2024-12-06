@@ -518,6 +518,10 @@ func (s *Server) HandleGet(req Request, conn net.Conn) Response {
 			Message: "Failed to read file.",
 		}
 	}
+	resp = Response{
+		Status:  "success",
+		Message: string(respData),
+	}
 	conn.Write(content) // Send file data
 	return resp
 }

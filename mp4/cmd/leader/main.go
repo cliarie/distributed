@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"mp4/pkg/api"
 	"mp4/pkg/hydfs/client"
@@ -139,38 +140,96 @@ func (s *leaderServer) reassignTask(taskID, srcFile, destFile string) {
 }
 
 func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) ([]string, error) {
-	partitions := make([]string, numTasks)
-	lines := []string{}
+	// Local file to store fetched data temporarily
+	localFile := fmt.Sprintf("local_%s", srcFile)
 
-	// Read the input file from HyDFS
-	resp, _ := hydfsClient.SendRequest(client.Request{
+	// Fetch file from HyDFS and stream to local file
+	resp, reader := hydfsClient.SendRequest(client.Request{
 		Operation: client.GET,
 		HyDFSFile: srcFile,
 	})
 	if resp.Status != "success" {
-		return nil, fmt.Errorf("Failed to fetch source file: %s", resp.Message)
+		fmt.Println(resp.Message)
+	}
+	// Open local file for writing
+	file, err := os.Create(localFile)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create local file: %v", err)
+	}
+	defer file.Close()
+
+	// Stream file data from server
+	buffer := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break // End of file
+			}
+			return nil, fmt.Errorf("Failed to read from stream: %v", err)
+		}
+
+		// Write to local file
+		_, err = file.Write(buffer[:n])
+		if err != nil {
+			return nil, fmt.Errorf("Failed to write to local file: %v", err)
+		}
 	}
 
-	lines = strings.Split(resp.Message, "\n")
-	linesPerPartition := len(lines) / int(numTasks)
+	log.Println("File fetched successfully and stored locally.")
 
+	// Read the file content into memory for partitioning
+	fileContent, err := os.ReadFile(localFile)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to read local file content: %v", err)
+	}
+
+	lines := strings.Split(string(fileContent), "\n")
+	totalLines := len(lines)
+
+	// Partitioning logic
+	partitions := make([]string, numTasks)
+	linesPerPartition := totalLines / int(numTasks)
+	remainder := totalLines % int(numTasks)
+
+	start := 0
 	for i := int32(0); i < numTasks; i++ {
-		start := int(i) * linesPerPartition
 		end := start + linesPerPartition
-		if i == numTasks-1 { // Handle remainder
-			end = len(lines)
+		if i == numTasks-1 { // Add the remainder to the last partition
+			end += remainder
 		}
 
 		partition := lines[start:end]
-		partitionName := fmt.Sprintf("%s-part-%d", srcFile, i)
+		partitionName := fmt.Sprintf("%s-part-%d.csv", strings.TrimSuffix(srcFile, ".csv"), i)
 
-		// Write partition back to HyDFS
-		_, _ = hydfsClient.SendRequest(client.Request{
+		// Debug: Log the partition content
+		log.Printf("Partition %d (%s): Start=%d, End=%d, Lines=%d", i, partitionName, start, end, len(partition))
+		log.Println(strings.Join(partition, "\n"))
+
+		// Write partition to a temporary local file
+		tempLocalFile := fmt.Sprintf("temp_%s", partitionName)
+		err := os.WriteFile(tempLocalFile, []byte(strings.Join(partition, "\n")), 0644)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to write temporary file %s: %v", tempLocalFile, err)
+		}
+
+		// Upload local file to HyDFS
+		resp, _ := hydfsClient.SendRequest(client.Request{
 			Operation: client.CREATE,
 			HyDFSFile: partitionName,
-			Content:   strings.Join(partition, "\n"),
+			LocalFile: tempLocalFile, // Specify the local file for upload
 		})
+
+		if resp.Status != "success" {
+			log.Printf("Failed to create partition %s: %s", partitionName, resp.Message)
+			return nil, fmt.Errorf("Failed to create partition %s: %s", partitionName, resp.Message)
+		}
+
+		// Clean up temporary local file
+		os.Remove(tempLocalFile)
+
 		partitions[i] = partitionName
+		start = end
 	}
 
 	return partitions, nil
