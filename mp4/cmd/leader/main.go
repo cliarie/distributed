@@ -53,8 +53,14 @@ func (s *leaderServer) RegisterWorker(ctx context.Context, workerInfo *api.Worke
 }
 
 func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignment) (*api.TaskResponse, error) {
+	s.taskLock.Lock()
+	defer s.taskLock.Unlock()
+
 	log.Printf("Assigning Task: TaskID=%s, Executable=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
 		taskAssignment.TaskId, taskAssignment.Executable, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
+	// Add the filter value to the executable command
+	filterValue := "X" // Replace "X" with the actual filter value, e.g., passed as a parameter to RainStorm
+	executableWithParams := fmt.Sprintf("%s %s", taskAssignment.Executable, filterValue)
 
 	partitions, err := partitionInput(taskAssignment.NumTasks, taskAssignment.SrcFile, s.hydfsClient)
 	if err != nil {
@@ -70,6 +76,7 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	for i, partition := range partitions {
 		workerID := workerIDs[i%len(workerIDs)] // Round-robin assignment
 		workerAddress := s.workers[workerID]
+		log.Printf("Assigning partition %d to worker %s (%s)", i, workerID, workerAddress)
 
 		go func(workerAddr string, taskID, executable, partition, destFile string) {
 			client, conn, err := connectToWorker(workerAddr)
@@ -84,13 +91,13 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 				TaskId:     taskID,
 				SrcFile:    partition,
 				DestFile:   destFile,
-				Executable: executable,
+				Executable: executableWithParams,
 			})
 			if err != nil {
 				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskID, err)
 				s.reassignTask(taskID, partition, destFile)
 			}
-		}(workerAddress, fmt.Sprintf("%s-part-%d", taskAssignment.TaskId, i), taskAssignment.Executable, partition, taskAssignment.DestFile)
+		}(workerAddress, fmt.Sprintf("%s-part-%d", taskAssignment.TaskId, i), partition, taskAssignment.DestFile, executableWithParams)
 	}
 
 	return &api.TaskResponse{

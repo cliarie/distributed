@@ -27,7 +27,10 @@ type workerServer struct {
 // Process lines with a given executable
 func processWithExecutable(executable string, lines []string) []string {
 	input := strings.Join(lines, "\n")
-	cmd := exec.Command(executable)
+	// Split the executable string into command and args
+	parts := strings.Fields(executable)
+	cmd := exec.Command(parts[0], parts[1:]...) // First part is the command, the rest are args
+
 	cmd.Stdin = strings.NewReader(input)
 
 	output, err := cmd.Output()
