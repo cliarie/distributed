@@ -17,6 +17,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// USAGE go run main.go "/home/cychen6/g07/mp4/scripts/filter.exe STOP" "/home/cychen6/g07/mp4/scripts/transform.exe" input.csv output.csv 3
+
 func main() {
 	if len(os.Args) < 6 {
 		log.Fatalf("Invalid input: Usage RainStorm <op1_exe> <op2_exe> <hydfs_src_file> <hydfs_dest_filename> <num_tasks>")
