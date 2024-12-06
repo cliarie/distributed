@@ -1,0 +1,5 @@
+OBJECTID,Sign_Type,Category
+1,Streetlight,Traffic
+2,Punched Telespar,Warning
+3,Unpunched Telespar,Regulatory
+4,Streetlight,Warning
