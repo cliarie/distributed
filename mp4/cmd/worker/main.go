@@ -39,9 +39,23 @@ func processWithExecutable(executable string, lines []string) []string {
 	return strings.Split(strings.TrimSpace(string(output)), "\n")
 }
 
+func logState(hydfsClient *client.Client, taskID string, uids []string, results []string) error {
+	logFile := fmt.Sprintf("task-%s-log", taskID)
+	content := fmt.Sprintf("UIDs:%s\nResults:%s\n", strings.Join(uids, ","), strings.Join(results, "\n"))
+
+	_, _ = hydfsClient.SendRequest(client.Request{
+		Operation: client.APPEND,
+		HyDFSFile: logFile,
+		Content:   content,
+	})
+	return nil
+}
+
 // Handle task execution from leader
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
-	// Read partition from HyDFS
+	log.Printf("Processing task %s with executable %s", taskData.TaskId, taskData.Executable)
+
+	// Read input partition from HyDFS
 	resp, _ := s.hydfsClient.SendRequest(client.Request{
 		Operation: client.GET,
 		HyDFSFile: taskData.SrcFile,
@@ -60,14 +74,12 @@ func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) 
 		Content:   strings.Join(transformedLines, "\n"),
 	})
 	if resp.Status != "success" {
-		return nil, fmt.Errorf("Failed to append results")
+		return nil, fmt.Errorf("Failed to append results to %s: %s", taskData.DestFile, resp.Message)
 	}
 
-	log.Printf("Task %s processed and results appended to %s", taskData.TaskId, taskData.DestFile)
-	return &api.ExecutionResponse{
-		Success: true,
-		Message: "task executed successfully.",
-	}, nil
+	// Log task completion
+	log.Printf("Task %s processed successfully", taskData.TaskId)
+	return &api.ExecutionResponse{Success: true, Message: "Task executed successfully."}, nil
 }
 
 // Acknowledge task

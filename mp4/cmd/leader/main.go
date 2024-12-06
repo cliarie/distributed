@@ -29,6 +29,16 @@ type leaderServer struct {
 	// nodes    []string // list of nodes, see nodes.config
 }
 
+func (s *leaderServer) AckTask(ctx context.Context, ackInfo *api.AckInfo) (*api.AckResponse, error) {
+	log.Printf("Ack received for task %s", ackInfo.TaskId)
+	s.taskLock.Lock()
+	defer s.taskLock.Unlock()
+
+	// Mark task as completed
+	delete(s.tasks, ackInfo.TaskId)
+	return &api.AckResponse{Success: true, Message: "Acknowledgment received."}, nil
+}
+
 // LeaderService.RegisterWorker
 func (s *leaderServer) RegisterWorker(ctx context.Context, workerInfo *api.WorkerInfo) (*api.RegisterResponse, error) {
 	s.mu.Lock()
@@ -43,42 +53,44 @@ func (s *leaderServer) RegisterWorker(ctx context.Context, workerInfo *api.Worke
 }
 
 func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignment) (*api.TaskResponse, error) {
-	s.taskLock.Lock()
-	defer s.taskLock.Unlock()
+	log.Printf("Assigning Task: TaskID=%s, Executable=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
+		taskAssignment.TaskId, taskAssignment.Executable, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
 
-	log.Printf("Assigning Task: TaskID=%s, Operator=%s, Executable=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
-		taskAssignment.TaskId, taskAssignment.Operator, taskAssignment.Executable, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
-
-	// TODO: partition input into chunks
-	partitions := partitionInput(taskAssignment.NumTasks, taskAssignment.SrcFile)
-	workerCount := len(s.workers)
-	if workerCount == 0 {
-		return &api.TaskResponse{Success: false, Message: "No workers"}, nil
+	partitions, err := partitionInput(taskAssignment.NumTasks, taskAssignment.SrcFile, s.hydfsClient)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to partition input file: %v", err)
 	}
 
+	workerIDs := make([]string, 0, len(s.workers))
+	for workerID := range s.workers {
+		workerIDs = append(workerIDs, workerID)
+	}
+
+	// Assign partitions to workers
 	for i, partition := range partitions {
-		// TODO: select a worker (rr)
-		workerID := selectWorker(s.workers, i)
+		workerID := workerIDs[i%len(workerIDs)] // Round-robin assignment
 		workerAddress := s.workers[workerID]
 
-		log.Printf("Assignin partition %d to worker %s (%s)", i, workerID, workerAddress)
-		go func(workerAddr string, taskID, partition, destFile string) {
-			// TODO: connect to worker
+		go func(workerAddr string, taskID, executable, partition, destFile string) {
 			client, conn, err := connectToWorker(workerAddr)
 			if err != nil {
-				log.Printf("Failed to connect to worker %s: %v", workerAddr)
+				log.Printf("Failed to connect to worker %s: %v", workerAddr, err)
+				s.reassignTask(taskID, partition, destFile)
+				return
 			}
 			defer conn.Close()
-			// TODO: client execute task
+
 			_, err = client.ExecuteTask(context.Background(), &api.TaskData{
-				TaskId:   taskID,
-				SrcFile:  partition,
-				DestFile: destFile,
+				TaskId:     taskID,
+				SrcFile:    partition,
+				DestFile:   destFile,
+				Executable: executable,
 			})
 			if err != nil {
-				log.Printf("Worker %s failed to execute taskk %s; error: %v", workerAddr, taskID, err)
+				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskID, err)
+				s.reassignTask(taskID, partition, destFile)
 			}
-		}(workerAddress, fmt.Sprintf("%s-part-%d", taskAssignment.TaskId, i), partition, taskAssignment.DestFile)
+		}(workerAddress, fmt.Sprintf("%s-part-%d", taskAssignment.TaskId, i), taskAssignment.Executable, partition, taskAssignment.DestFile)
 	}
 
 	return &api.TaskResponse{
@@ -119,12 +131,42 @@ func (s *leaderServer) reassignTask(taskID, srcFile, destFile string) {
 	}
 }
 
-func partitionInput(numTasks int32, srcFile string) []string {
+func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) ([]string, error) {
 	partitions := make([]string, numTasks)
-	for i := int32(0); i < numTasks; i++ {
-		partitions[i] = fmt.Sprintf("Partition-%s-%d", srcFile, i)
+	lines := []string{}
+
+	// Read the input file from HyDFS
+	resp, _ := hydfsClient.SendRequest(client.Request{
+		Operation: client.GET,
+		HyDFSFile: srcFile,
+	})
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("Failed to fetch source file: %s", resp.Message)
 	}
-	return partitions
+
+	lines = strings.Split(resp.Message, "\n")
+	linesPerPartition := len(lines) / int(numTasks)
+
+	for i := int32(0); i < numTasks; i++ {
+		start := int(i) * linesPerPartition
+		end := start + linesPerPartition
+		if i == numTasks-1 { // Handle remainder
+			end = len(lines)
+		}
+
+		partition := lines[start:end]
+		partitionName := fmt.Sprintf("%s-part-%d", srcFile, i)
+
+		// Write partition back to HyDFS
+		_, _ = hydfsClient.SendRequest(client.Request{
+			Operation: client.CREATE,
+			HyDFSFile: partitionName,
+			Content:   strings.Join(partition, "\n"),
+		})
+		partitions[i] = partitionName
+	}
+
+	return partitions, nil
 }
 
 func selectWorker(workers map[string]string, index int) string {
