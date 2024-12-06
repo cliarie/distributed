@@ -22,8 +22,8 @@ func main() {
 		log.Fatalf("Invalid input: Usage RainStorm <op1_exe> <op2_exe> <hydfs_src_file> <hydfs_dest_filename> <num_tasks>")
 	}
 
-	command := strings.Join(os.Args[1:], " ")
-	args := strings.Fields(command)
+	// Preserve quoted arguments
+	args := parseArguments(os.Args[1:])
 
 	if len(args) != 5 {
 		log.Fatalf("Invalid input: Usage RainStorm <op1_exe> <op2_exe> <hydfs_src_file> <hydfs_dest_filename> <num_tasks>")
@@ -47,8 +47,8 @@ func main() {
 		log.Fatalf("Input file validation failed: %s", resp.Message)
 	}
 
-	// connect to the leader
-	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Connect to the leader
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to leader: %v", err)
 	}
@@ -56,9 +56,9 @@ func main() {
 
 	client := api.NewLeaderServiceClient(conn)
 
-	// submit job
+	// Submit job
 	taskAssignment := &api.TaskAssignment{
-		TaskId:      jobID, // generate unique ID for each job
+		TaskId:      jobID, // Generate unique ID for each job
 		Executable1: op1Exe,
 		Executable2: op2Exe,
 		NumTasks:    parseNumTasks(numTasks),
@@ -69,7 +69,43 @@ func main() {
 	if err != nil {
 		log.Fatalf("Job submission failed: %v", err)
 	}
-	fmt.Printf("Job submitted success, message=%v", resp.Message)
+	fmt.Printf("Job submitted successfully, message=%v\n", resp.Message)
+}
+
+// parseArguments handles preserving quoted arguments
+func parseArguments(args []string) []string {
+	result := []string{}
+	current := ""
+	inQuotes := false
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "\"") && strings.HasSuffix(arg, "\"") {
+			// Single quoted argument
+			result = append(result, strings.Trim(arg, "\""))
+		} else if strings.HasPrefix(arg, "\"") {
+			// Start of a quoted argument
+			inQuotes = true
+			current = strings.TrimPrefix(arg, "\"")
+		} else if strings.HasSuffix(arg, "\"") && inQuotes {
+			// End of a quoted argument
+			current += " " + strings.TrimSuffix(arg, "\"")
+			result = append(result, current)
+			current = ""
+			inQuotes = false
+		} else if inQuotes {
+			// Inside a quoted argument
+			current += " " + arg
+		} else {
+			// Regular argument
+			result = append(result, arg)
+		}
+	}
+
+	if inQuotes {
+		log.Fatalf("Invalid input: unmatched quotes in arguments")
+	}
+
+	return result
 }
 
 func parseNumTasks(numTasks string) int32 {
