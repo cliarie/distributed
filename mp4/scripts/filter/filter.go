@@ -1,3 +1,4 @@
+// Filters lines based on a given value (e.g., "Punched Telespar") in the Sign_Post_Type column.
 package main
 
 import (
@@ -9,6 +10,12 @@ import (
 )
 
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: ./filter <filter_value>")
+		os.Exit(1)
+	}
+	filterValue := os.Args[1]
+
 	scanner := bufio.NewScanner(os.Stdin)
 	writer := csv.NewWriter(os.Stdout)
 	defer writer.Flush()
@@ -16,10 +23,9 @@ func main() {
 	for scanner.Scan() {
 		line := scanner.Text()
 		record := parseCSVLine(line)
-		// Extract OBJECTID and Sign_Type
-		if len(record) >= 2 {
-			output := []string{record[0], record[1]}
-			writer.Write(output)
+		// Filter rows where Sign_Post_Type matches the filter value
+		if len(record) >= 7 && strings.TrimSpace(record[6]) == filterValue {
+			writer.Write(record)
 		}
 	}
 	if err := scanner.Err(); err != nil {

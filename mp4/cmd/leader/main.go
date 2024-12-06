@@ -60,7 +60,7 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	log.Printf("Assigning Task: TaskID=%s, Executable=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
 		taskAssignment.TaskId, taskAssignment.Executable, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
 	// Add the filter value to the executable command
-	filterValue := "X" // Replace "X" with the actual filter value, e.g., passed as a parameter to RainStorm
+	filterValue := "STOP" // Replace "X" with the actual filter value, e.g., passed as a parameter to RainStorm
 	executableWithParams := fmt.Sprintf("%s %s", taskAssignment.Executable, filterValue)
 
 	partitions, err := partitionInput(taskAssignment.NumTasks, taskAssignment.SrcFile, s.hydfsClient)

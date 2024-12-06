@@ -1,10 +1,7 @@
-1,Streetlight,Traffic
-2,Punched Telespar,Warning
-3,Unpunched Telespar,Regulatory
-4,Streetlight,Warning
-5,Punched Telespar,Regulatory
-6,Unpunched Telespar,Traffic
-7,Streetlight,Regulatory
-8,Punched Telespar,Traffic
-9,Streetlight,Warning
-10,Unpunched Telespar,Warning
+ID,Street,City,Sign_Post_Type,Condition
+1,Main St,Springfield,STOP,Good
+2,2nd Ave,Shelbyville,YIELD,Fair
+3,Elm St,Springfield,STOP,Poor
+4,Pine St,Shelbyville,YIELD,Good
+5,Oak St,Springfield,SPEED_LIMIT,Good
+6,Birch St,Shelbyville,STOP,Fair

@@ -1,3 +1,4 @@
+// Aggregates the counts of Category for each key (Sign_Post_Type).
 package main
 
 import (
@@ -9,26 +10,28 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: ./filter <filter_value>")
-		os.Exit(1)
-	}
-	filterValue := os.Args[1]
+	counts := make(map[string]int)
 
 	scanner := bufio.NewScanner(os.Stdin)
-	writer := csv.NewWriter(os.Stdout)
-	defer writer.Flush()
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		record := parseCSVLine(line)
-		// Filter by Sign_Post_Type
-		if len(record) >= 4 && strings.TrimSpace(record[3]) == filterValue {
-			writer.Write(record)
+		// Aggregate counts by Category
+		if len(record) >= 7 {
+			category := strings.TrimSpace(record[8])
+			counts[category]++
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+		return
+	}
+
+	// Output the aggregated counts
+	writer := csv.NewWriter(os.Stdout)
+	defer writer.Flush()
+	for key, count := range counts {
+		writer.Write([]string{key, fmt.Sprintf("%d", count)})
 	}
 }
 
