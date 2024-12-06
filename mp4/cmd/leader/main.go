@@ -1,5 +1,7 @@
 // initializes the leader server, sets up grpc server, starts listening for worker registrations and task assignments
 // monitors heartbeats from workers
+
+// on leader (vm1) run: go run main.go and also run hydfs/server/server.go
 package main
 
 import (

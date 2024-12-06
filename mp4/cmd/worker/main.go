@@ -1,5 +1,6 @@
 // registers with the leader, send periodic heartbeats to leader
 // waits for task assignments from leader
+// on start for all vms except 1 (leader); go to this directory and run: go run main.go
 package main
 
 import (
