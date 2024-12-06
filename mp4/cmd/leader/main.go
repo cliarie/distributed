@@ -57,53 +57,93 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	s.taskLock.Lock()
 	defer s.taskLock.Unlock()
 
-	log.Printf("Assigning Task: TaskID=%s, Executable=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
-		taskAssignment.TaskId, taskAssignment.Executable, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
-	// Add the filter value to the executable command
-	filterValue := "STOP" // Replace "X" with the actual filter value, e.g., passed as a parameter to RainStorm
-	executableWithParams := fmt.Sprintf("%s %s", taskAssignment.Executable, filterValue)
+	log.Printf("Assigning Task: TaskID=%s, Executable1=%s, Executable2=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
+		taskAssignment.TaskId, taskAssignment.Executable1, taskAssignment.Executable2, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
 
+	// Stage 1: Partition input file and run Executable1
 	partitions, err := partitionInput(taskAssignment.NumTasks, taskAssignment.SrcFile, s.hydfsClient)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to partition input file: %v", err)
 	}
 
-	workerIDs := make([]string, 0, len(s.workers))
-	for workerID := range s.workers {
-		workerIDs = append(workerIDs, workerID)
-	}
+	intermediateFiles := make([]string, len(partitions))
+	var wg sync.WaitGroup
 
-	// Assign partitions to workers
 	for i, partition := range partitions {
-		workerID := workerIDs[i%len(workerIDs)] // Round-robin assignment
+		workerID := selectWorker(s.workers, i)
 		workerAddress := s.workers[workerID]
-		log.Printf("Assigning partition %d to worker %s (%s)", i, workerID, workerAddress)
+		intermediateFile := fmt.Sprintf("%s-stage1-part-%d.csv", taskAssignment.TaskId, i)
 
-		go func(workerAddr string, taskID, executable, partition, destFile string) {
+		wg.Add(1)
+		go func(workerAddr, partitionFile, intermediateFile string) {
+			defer wg.Done()
+
 			client, conn, err := connectToWorker(workerAddr)
 			if err != nil {
 				log.Printf("Failed to connect to worker %s: %v", workerAddr, err)
-				s.reassignTask(taskID, partition, destFile)
+				s.reassignTask(taskAssignment.TaskId, partitionFile, intermediateFile)
 				return
 			}
 			defer conn.Close()
 
 			_, err = client.ExecuteTask(context.Background(), &api.TaskData{
-				TaskId:     taskID,
-				SrcFile:    partition,
-				DestFile:   destFile,
-				Executable: executableWithParams,
+				TaskId:     fmt.Sprintf("%s-part1-%d", taskAssignment.TaskId, i),
+				SrcFile:    partitionFile,
+				DestFile:   intermediateFile,
+				Executable: taskAssignment.Executable1,
 			})
 			if err != nil {
-				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskID, err)
-				s.reassignTask(taskID, partition, destFile)
+				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
+				s.reassignTask(taskAssignment.TaskId, partitionFile, intermediateFile)
 			}
-		}(workerAddress, fmt.Sprintf("%s-part-%d", taskAssignment.TaskId, i), partition, taskAssignment.DestFile, executableWithParams)
+			intermediateFiles[i] = intermediateFile
+		}(workerAddress, partition, intermediateFile)
 	}
+
+	wg.Wait() // Wait for all stage 1 tasks to complete
+
+	log.Println("Stage 1 complete. Running Stage 2...")
+
+	// Stage 2: Partition intermediate files and run Executable2
+	finalIntermediateFile := fmt.Sprintf("%s-final-stage.csv", taskAssignment.TaskId)
+	wg = sync.WaitGroup{}
+
+	for i, intermediateFile := range intermediateFiles {
+		workerID := selectWorker(s.workers, i)
+		workerAddress := s.workers[workerID]
+
+		wg.Add(1)
+		go func(workerAddr, intermediateFile, finalFile string) {
+			defer wg.Done()
+
+			client, conn, err := connectToWorker(workerAddr)
+			if err != nil {
+				log.Printf("Failed to connect to worker %s: %v", workerAddr, err)
+				s.reassignTask(taskAssignment.TaskId, intermediateFile, finalFile)
+				return
+			}
+			defer conn.Close()
+
+			_, err = client.ExecuteTask(context.Background(), &api.TaskData{
+				TaskId:     fmt.Sprintf("%s-part2-%d", taskAssignment.TaskId, i),
+				SrcFile:    intermediateFile,
+				DestFile:   finalFile,
+				Executable: taskAssignment.Executable2,
+			})
+			if err != nil {
+				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
+				s.reassignTask(taskAssignment.TaskId, intermediateFile, finalFile)
+			}
+		}(workerAddress, intermediateFile, finalIntermediateFile)
+	}
+
+	wg.Wait() // Wait for all stage 2 tasks to complete
+
+	log.Println("All tasks completed. Final output generated.")
 
 	return &api.TaskResponse{
 		Success: true,
-		Message: "Task assigned successfully.",
+		Message: "Task completed successfully.",
 	}, nil
 }
 

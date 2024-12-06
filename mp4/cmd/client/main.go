@@ -58,12 +58,12 @@ func main() {
 
 	// submit job
 	taskAssignment := &api.TaskAssignment{
-		TaskId:     jobID, // generate unique ID for each job
-		Operator:   op1Exe,
-		Executable: op2Exe,
-		NumTasks:   parseNumTasks(numTasks),
-		SrcFile:    srcFile,
-		DestFile:   destFile,
+		TaskId:      jobID, // generate unique ID for each job
+		Executable1: op1Exe,
+		Executable2: op2Exe,
+		NumTasks:    parseNumTasks(numTasks),
+		SrcFile:     srcFile,
+		DestFile:    destFile,
 	}
 	_, err = client.AssignTask(context.Background(), taskAssignment)
 	if err != nil {

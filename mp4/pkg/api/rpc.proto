@@ -27,8 +27,8 @@ message RegisterResponse{
 
 message TaskAssignment{
     string task_id = 1;
-    string operator = 2;
-    string executable = 3;
+    string executable1 = 2;
+    string executable2 = 3;
     int32 num_tasks = 4;
     string src_file = 5;
     string dest_file = 6;
