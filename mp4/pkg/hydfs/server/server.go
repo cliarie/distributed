@@ -59,6 +59,7 @@ type Operation string
 
 const (
 	CREATE       Operation = "create"
+	DELETE       Operation = "delete"
 	REPLICATE    Operation = "replicate"
 	GET          Operation = "get"
 	APPEND       Operation = "append"
@@ -257,6 +258,27 @@ func (s *Server) forwardRequest(target string, req Request) Response {
 	}
 
 	return resp
+}
+
+// HandleCreate processes create requests
+func (s *Server) HandleDelete(req Request, conn net.Conn, reader *bufio.Reader) Response {
+	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
+	os.Remove(hydfsPath)
+
+	resp := Response{
+		Status:  "success",
+		Message: "File deleted successfully.",
+	}
+	respData, _ := json.Marshal(resp)
+
+	// Send JSON response + delimiter
+	conn.Write(respData)
+	conn.Write([]byte("\n\n")) // Custom delimiter
+
+	return Response{
+		Status:  "success",
+		Message: "File deleted successfully.",
+	}
 }
 
 // Mutex locking issue, cant handle multiple requests at once...
@@ -842,6 +864,9 @@ func (s *Server) processRequest(data []byte, conn net.Conn, reader *bufio.Reader
 		fmt.Printf("[%s] Begin handling create\n", time.Now().Format("2006-01-02 15:04:05"))
 		resp = s.HandleCreate(req, conn, reader, false)
 		fmt.Printf("[%s] Create finished\n", time.Now().Format("2006-01-02 15:04:05"))
+		return
+	case DELETE:
+		resp = s.HandleDelete(req, conn, reader)
 		return
 	case REPLICATE:
 		resp = s.HandleCreate(req, conn, reader, true)

@@ -48,6 +48,7 @@ type Operation string
 
 const (
 	CREATE       Operation = "create"
+	DELETE       Operation = "delete"
 	GET          Operation = "get"
 	APPEND       Operation = "append"
 	MERGE        Operation = "merge"
@@ -109,6 +110,24 @@ func NewClient(serverAddress string) *Client {
 	}
 
 	return client
+}
+
+func (client *Client) DeleteRequest(hydfsFile string) (string) {
+	req := Request{
+		Operation: DELETE,
+		HyDFSFile: hydfsFile,
+	}
+	resp, _ := client.SendRequest(req)
+	if resp.Status == "redirect" {
+		newAddr := resp.Message
+		oldAddr := client.serverAddr
+		addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+		client.serverAddr = addr
+		_, _ = client.SendRequest(req)
+		client.serverAddr = oldAddr
+		return "success"
+	}
+	return "success"
 }
 
 func (client *Client) CreateRequest(localFile string, hydfsFile string) (string) {

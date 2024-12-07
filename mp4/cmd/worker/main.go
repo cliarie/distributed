@@ -24,8 +24,9 @@ import (
 type workerServer struct {
 	api.UnimplementedWorkerServiceServer
 	mu            sync.Mutex
-	workerID    string
+	workerID      string
 	hydfsClient *client.Client
+	hydfsLogFile  string
 }
 
 // Process lines with a given executable
@@ -70,8 +71,23 @@ func processWithExecutable(executable string, lines []string) []string {
 // 	return nil
 // }
 
+func (s *workerServer) hydfsLog(content string) {
+	tempFile, _ := os.CreateTemp("", "hydfs_log_*.tmp")
+	defer tempFile.Close()
+	_, _ = tempFile.WriteString(content + "\n")
+	tempFileName := tempFile.Name()
+	s.mu.Lock()
+	_ = s.hydfsClient.AppendRequest(tempFileName, s.hydfsLogFile)
+	s.mu.Unlock()
+	_ = os.Remove(tempFileName)
+}
+
+
 // Handle task execution from leader
 func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) (*api.ExecutionResponse, error) {
+	// worker log: recieved task
+	s.hydfsLog(fmt.Sprintf("Recieved/Beginning task <%s> with executable <%s>", taskData.TaskId, taskData.Executable))
+
 	if taskData.Executable == "" {
 		log.Printf("Error: Executable is empty for task %s", taskData.TaskId)
 		return nil, fmt.Errorf("executable is empty")
@@ -106,6 +122,7 @@ func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) 
 	file.WriteString(strings.Join(transformedLines, "\n"))
 	s.mu.Lock()
 	fmt.Printf("attempting to create intermediate file %s\n", taskData.DestFile)
+	s.hydfsClient.DeleteRequest(taskData.DestFile)
 	resp = s.hydfsClient.CreateRequest(tempFile, taskData.DestFile)
 	s.mu.Unlock()
 	os.Remove(tempFile)
@@ -115,6 +132,9 @@ func (s *workerServer) ExecuteTask(ctx context.Context, taskData *api.TaskData) 
 
 	// Log task completion
 	log.Printf("Task %s processed successfully", taskData.TaskId)
+	// worker log: finished task
+	s.hydfsLog(fmt.Sprintf("Finished task <%s> with executable <%s>", taskData.TaskId, taskData.Executable))
+
 	return &api.ExecutionResponse{Success: true, Message: "Task executed successfully."}, nil
 }
 
@@ -180,7 +200,10 @@ func main() {
 		api.RegisterWorkerServiceServer(s, &workerServer{
 			workerID:    workerID,
 			hydfsClient: hydfsClient,
+			hydfsLogFile: "worker-" + workerIndex + ".log",
 		})
+		hydfsClient.DeleteRequest("worker-" + workerIndex + ".log")
+		hydfsClient.CreateRequest("blank", "worker-" + workerIndex + ".log")
 		log.Printf("WorkerService Server %s running on %s", workerID, workerAddress)
 		if err := s.Serve(lis); err != nil {
 			log.Fatalf("Failed to serve worker service: %v", err)

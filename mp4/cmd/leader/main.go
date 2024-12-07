@@ -7,7 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
-	// "io"
+	"io"
 	"log"
 	"mp4/pkg/api"
 	"mp4/pkg/hydfs/client"
@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+    "strconv"
 	"time"
 
 	"google.golang.org/grpc"
@@ -29,7 +30,74 @@ type leaderServer struct {
 	taskLock    sync.Mutex
 	mu          sync.Mutex
 	hydfsClient *client.Client
+	count       map[string]int
 	// nodes    []string // list of nodes, see nodes.config
+}
+// extractPartNumber splits the file name and extracts the part number.
+func extractPartNumber(fileName string) int {
+    // Split the file name by '-'
+    parts := strings.Split(fileName, "-")
+    if len(parts) < 5 {
+        log.Printf("Error extracting part number: file name %s does not have enough parts", fileName)
+        return -1
+    }
+
+    // Extract the last part and remove the ".csv" suffix
+    partStr := strings.TrimSuffix(parts[len(parts)-1], ".csv")
+
+    // Convert the part string to an integer
+    partNumber, err := strconv.Atoi(partStr)
+    if err != nil {
+        log.Printf("Error converting part number to integer: %v", err)
+        return -1
+    }
+
+    return partNumber
+}
+
+func isAggregation(content string) bool {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return false
+	}
+	parts := strings.Split(lines[0], ",")
+	if len(parts) == 2 {
+		if _, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *leaderServer) getCountAsString() string {
+    var result strings.Builder
+    for key, value := range s.count {
+        line := fmt.Sprintf("%s,%d\n", key, value)
+        result.WriteString(line)
+    }
+	result.WriteString("\n")
+    return result.String()
+}
+
+// updateCountAndLocalFile updates the local count mapping and persists it to a local file.
+func (s *leaderServer) updateCount(content string) {
+	lines := strings.Split(content, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, ",")
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err == nil {
+				s.count[key] += value
+			}
+		}
+	}
 }
 
 func (s *leaderServer) AckTask(ctx context.Context, ackInfo *api.AckInfo) (*api.AckResponse, error) {
@@ -40,6 +108,22 @@ func (s *leaderServer) AckTask(ctx context.Context, ackInfo *api.AckInfo) (*api.
 	// Mark task as completed
 	delete(s.tasks, ackInfo.TaskId)
 	return &api.AckResponse{Success: true, Message: "Acknowledgment received."}, nil
+}
+
+func (s *leaderServer) removeWorker(workerID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if the worker exists in the workers map
+	address, exists := s.workers[workerID]
+	if !exists {
+		log.Printf("Worker %s does not exist and cannot be removed.", workerID)
+		return
+	}
+
+	// Remove the worker from the workers map
+	delete(s.workers, workerID)
+	log.Printf("Removed worker %s with address %s.", workerID, address)
 }
 
 // LeaderService.RegisterWorker
@@ -58,6 +142,7 @@ func (s *leaderServer) RegisterWorker(ctx context.Context, workerInfo *api.Worke
 func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskAssignment) (*api.TaskResponse, error) {
 	s.taskLock.Lock()
 	defer s.taskLock.Unlock()
+	s.count = make(map[string]int)
 
 	log.Printf("Assigning Task: TaskID=%s, Executable1=%s, Executable2=%s, NumTasks=%d, SrcFile=%s, DestFile=%s",
 		taskAssignment.TaskId, taskAssignment.Executable1, taskAssignment.Executable2, taskAssignment.NumTasks, taskAssignment.SrcFile, taskAssignment.DestFile)
@@ -67,84 +152,142 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	if err != nil {
 		return nil, fmt.Errorf("Failed to partition input file: %v", err)
 	}
+	time.Sleep(1 * time.Second)
 
-	intermediateFiles := make([]string, len(partitions))
+	intermediateCh := make(chan string, len(partitions))
+	finalCh := make(chan string, len(partitions))
 	var wg sync.WaitGroup
 
-	log.Println("Partitioning complete. Running Stage 1...")
+	log.Println("Partitioning complete. Running Stage 1 and Stage 2 in parallel...")
+
+	// Stage 1
 	for i, partition := range partitions {
-		workerID := selectWorker(s.workers, i)
-		workerAddress := s.workers[workerID]
-		intermediateFile := fmt.Sprintf("%s-stage1-part-%d.csv", taskAssignment.TaskId, i)
-
 		wg.Add(1)
-		go func(workerAddr, partitionFile, intermediateFile string) {
+		go func(i int, partition string) {
 			defer wg.Done()
-
-			client, conn, err := connectToWorker(workerAddr)
-			if err != nil {
-				log.Printf("Failed to connect to worker %s: %v", workerAddr, err)
-				s.reassignTask(taskAssignment.TaskId, partitionFile, intermediateFile)
-				return
-			}
-			defer conn.Close()
-
-			_, err = client.ExecuteTask(context.Background(), &api.TaskData{
+			workerID := selectWorker(s.workers, i)
+			workerAddress := s.workers[workerID]
+			intermediateFile := fmt.Sprintf("%s-stage1-part-%d.csv", taskAssignment.TaskId, i)
+			taskData := &api.TaskData{
 				TaskId:     fmt.Sprintf("%s-part1-%d", taskAssignment.TaskId, i),
-				SrcFile:    partitionFile,
+				SrcFile:    partition,
 				DestFile:   intermediateFile,
 				Executable: taskAssignment.Executable1,
-			})
-			// fmt.Printf("EXECUTABLE: %s\n\n\n", taskAssignment.Executable1)
-			if err != nil {
-				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
-				s.reassignTask(taskAssignment.TaskId, partitionFile, intermediateFile)
 			}
-			intermediateFiles[i] = intermediateFile
-		}(workerAddress, partition, intermediateFile)
-	}
 
-	wg.Wait() // Wait for all stage 1 tasks to complete
-
-	log.Println("Stage 1 complete. Running Stage 2...")
-	
-
-	// Stage 2: Partition intermediate files and run Executable2
-	finalIntermediateFiles := make([]string, len(partitions))
-	wg = sync.WaitGroup{}
-
-	for i, intermediateFile := range intermediateFiles {
-		workerID := selectWorker(s.workers, i)
-		workerAddress := s.workers[workerID]
-		finalIntermediateFile := fmt.Sprintf("%s-final-stage-part-%d.csv", taskAssignment.TaskId, i)
-
-		wg.Add(1)
-		go func(workerAddr, intermediateFile, finalFile string) {
-			defer wg.Done()
-
-			client, conn, err := connectToWorker(workerAddr)
+			client, conn, err := connectToWorker(workerAddress)
 			if err != nil {
-				log.Printf("Failed to connect to worker %s: %v", workerAddr, err)
-				s.reassignTask(taskAssignment.TaskId, intermediateFile, finalFile)
+				log.Printf("Failed to connect to worker %s: %v", workerAddress, err)
+				s.removeWorker(workerID)
+				s.reassignTask(taskData)
+				intermediateCh <- intermediateFile
 				return
 			}
 			defer conn.Close()
 
-			_, err = client.ExecuteTask(context.Background(), &api.TaskData{
-				TaskId:     fmt.Sprintf("%s-part2-%d", taskAssignment.TaskId, i),
-				SrcFile:    intermediateFile,
-				DestFile:   finalFile,
-				Executable: taskAssignment.Executable2,
-			})
+			_, err = client.ExecuteTask(context.Background(), taskData)
 			if err != nil {
-				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
-				s.reassignTask(taskAssignment.TaskId, intermediateFile, finalFile)
+				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddress, taskAssignment.TaskId, err)
+				s.removeWorker(workerID)
+				s.reassignTask(taskData)
 			}
-			finalIntermediateFiles[i] = finalFile
-		}(workerAddress, intermediateFile, finalIntermediateFile)
+
+			intermediateCh <- intermediateFile
+		}(i, partition)
 	}
 
-	wg.Wait() // Wait for all stage 2 tasks to complete
+	// Stage 2
+	go func() {
+		for intermediateFile := range intermediateCh {
+			wg.Add(1)
+			go func(intermediateFile string) {
+				defer wg.Done()
+
+				time.Sleep(400 * time.Millisecond)
+				// Extract part number from intermediate file name
+				partNumber := extractPartNumber(intermediateFile)
+				workerID := selectWorker(s.workers, partNumber)
+				workerAddress := s.workers[workerID]
+				finalIntermediateFile := fmt.Sprintf("%s-final-stage-part-%d.csv", taskAssignment.TaskId, partNumber)
+				taskData := &api.TaskData{
+					TaskId:     fmt.Sprintf("%s-part2-%d", taskAssignment.TaskId, partNumber),
+					SrcFile:    intermediateFile,
+					DestFile:   finalIntermediateFile,
+					Executable: taskAssignment.Executable2,
+				}
+
+				client, conn, err := connectToWorker(workerAddress)
+				if err != nil {
+					log.Printf("Failed to connect to worker %s: %v", workerAddress, err)
+					s.reassignTask(taskData)
+					finalCh <- finalIntermediateFile
+					return
+				}
+				defer conn.Close()
+
+				_, err = client.ExecuteTask(context.Background(), taskData)
+				if err != nil {
+					log.Printf("Worker %s failed to execute task %s; error: %v", workerAddress, taskAssignment.TaskId, err)
+					s.reassignTask(taskData)
+				}
+
+				finalCh <- finalIntermediateFile
+			}(intermediateFile)
+		}
+	}()
+	
+	s.mu.Lock()
+	_ = s.hydfsClient.DeleteRequest(taskAssignment.DestFile)
+	_ = s.hydfsClient.CreateRequest("blank", taskAssignment.DestFile)
+	s.mu.Unlock()
+
+	
+
+	// Final stage to handle files from finalCh
+	go func() {
+		for finalFile := range finalCh {
+			wg.Add(1)
+			go func(finalFile string) {
+				defer wg.Done()
+
+				tempFile := fmt.Sprintf("temp_%s", finalFile)
+				file, _ := os.OpenFile(tempFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+				time.Sleep(400 * time.Millisecond)
+				s.mu.Lock()
+				resp := s.hydfsClient.GetRequest(finalFile, tempFile)
+				file.WriteString("\n")
+
+				if resp == "error" {
+					log.Printf("Error fetching file %s\n", finalFile)
+					os.Remove(tempFile)
+					return
+				}
+
+				// Checks if this is aggregation vs simple line output
+				contentSlice, _ := os.ReadFile(tempFile)
+				content := string(contentSlice)
+				if isAggregation(content) {
+					s.updateCount(content)
+					file, _ = os.OpenFile(tempFile, os.O_TRUNC|os.O_WRONLY, 0644)
+					content = s.getCountAsString()
+					file.WriteString(content)
+				}
+
+				// Output the file contents to the console
+				fmt.Printf("Final file update:\n%s\n", content)
+				_ = s.hydfsClient.AppendRequest(tempFile, taskAssignment.DestFile)
+				s.mu.Unlock()
+
+
+				// Remove the temp file after use
+				err = os.Remove(tempFile)
+			}(finalFile)
+		}
+	}()
+
+	wg.Wait()
+	close(intermediateCh)
+	close(finalCh)
 
 	log.Println("All tasks completed. Final output generated.")
 
@@ -155,17 +298,14 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 }
 
 // Reassign tasks to a different worker
-func (s *leaderServer) reassignTask(taskID, srcFile, destFile string) {
-	log.Printf("Reassigning task %s", taskID)
+func (s *leaderServer) reassignTask(taskData *api.TaskData) {
+	log.Printf("Reassigning task %s", taskData.TaskId)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for workerID, address := range s.workers {
-		if _, exists := s.tasks[taskID]; exists && s.tasks[taskID] == workerID {
-			continue
-		}
-		log.Printf("Reassigning task %s to worker %s", taskID, workerID)
+		log.Printf("Reassigning task %s to worker %s", taskData.TaskId, workerID)
 		client, conn, err := connectToWorker(address)
 		if err != nil {
 			log.Printf("Failed to connect to worker %s: %v", workerID, err)
@@ -173,13 +313,8 @@ func (s *leaderServer) reassignTask(taskID, srcFile, destFile string) {
 		}
 		defer conn.Close()
 
-		_, err = client.ExecuteTask(context.Background(), &api.TaskData{
-			TaskId:   taskID,
-			SrcFile:  srcFile,
-			DestFile: destFile,
-		})
+		_, err = client.ExecuteTask(context.Background(), taskData)
 		if err == nil {
-			s.tasks[taskID] = workerID
 			return
 		}
 		log.Printf("Worker %s failed: %v", workerID, err)
@@ -233,6 +368,7 @@ func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) 
 		}
 
 		// Upload local file to HyDFS
+		hydfsClient.DeleteRequest(partitionName)
 		resp := hydfsClient.CreateRequest(tempLocalFile, partitionName)
 		if resp == "error" {
 			log.Printf("Failed to create partition.")
@@ -294,6 +430,15 @@ func (s *leaderServer) monitorHeartbeats() {
 
 func main() {
 	// nodes := loadNodes("nodes.config")
+	// Open or create the log file
+	logFile, _ := os.OpenFile("leader.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	defer logFile.Close()
+	// Create a multi-writer to write to both stdout and the log file
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	// Set the output of the log package to the multi-writer
+	log.SetOutput(multiWriter)
+
+
 	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
 	defer hydfsClient.Close()
 
@@ -306,6 +451,7 @@ func main() {
 		workers:     make(map[string]string),
 		tasks:       make(map[string]string),
 		hydfsClient: hydfsClient,
+		count:       make(map[string]int),
 		// nodes:   nodes,
 	}
 
