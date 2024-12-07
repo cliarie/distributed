@@ -16,3 +16,25 @@ go run cmd/worker/main.go
 
 Finally, to run rainstorm:
 go run ./cmd/client/main.go "./scripts/filter.exe STOP" "./scripts/transform.exe" input.csv output.csv 3
+
+
+App 1:
+cat local_input.csv | scripts/filter1.exe Outlet | scripts/transform.exe
+go run ./cmd/client/main.go "./scripts/filter1.exe Outlet" "./scripts/transform.exe" input.csv output.csv 3
+3,No Outlet
+4,No Outlet
+5,No Outlet
+6,No Outlet
+7,No Outlet
+10,No Outlet
+11,No Outlet
+12,No Outlet
+13,No Outlet
+
+App 2:
+cat local_input.csv | scripts/filter2.exe "Punched Telespar" | scripts/aggregate.exe
+go run ./cmd/client/main.go "./scripts/filter2.exe \"Punched Telespar\"" "./scripts/aggregate.exe" input.csv output.csv 3
+Warning,9
+Streetname,31
+Parking,2
+Regulatory,13
