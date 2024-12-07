@@ -55,6 +55,9 @@ go run ./cmd/client/main.go "./scripts/filter1.exe Streetname" "./scripts/transf
 75,Streetname
 76,Streetname
 
+go run ./cmd/client/main.go "./scripts/filter1.exe Streetname" "./scripts/transform.exe" 10000.csv output.csv 3
+
+
 App 2:
 cat local_input.csv | scripts/filter2.exe "Punched Telespar" | scripts/aggregate.exe
 go run ./cmd/client/main.go "./scripts/filter2.exe \"Punched Telespar\"" "./scripts/aggregate.exe" input.csv output.csv 3
@@ -62,3 +65,16 @@ Warning,9
 Streetname,31
 Parking,2
 Regulatory,13
+
+
+cat local_10000.csv | scripts/filter2.exe "Punched Telespar" | scripts/aggregate.exe
+go run ./cmd/client/main.go "./scripts/filter2.exe \"Punched Telespar\"" "./scripts/aggregate.exe" 10000.csv output.csv 3
+Parking,1355
+MTD,92
+Warning,243
+Streetname,1334
+Regulatory,1732
+School,198
+Object Marker,81
+Custom,78
+Guide,41
