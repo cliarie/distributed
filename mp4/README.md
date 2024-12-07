@@ -19,17 +19,41 @@ go run ./cmd/client/main.go "./scripts/filter.exe STOP" "./scripts/transform.exe
 
 
 App 1:
-cat local_input.csv | scripts/filter1.exe Outlet | scripts/transform.exe
-go run ./cmd/client/main.go "./scripts/filter1.exe Outlet" "./scripts/transform.exe" input.csv output.csv 3
-3,No Outlet
-4,No Outlet
-5,No Outlet
-6,No Outlet
-7,No Outlet
-10,No Outlet
-11,No Outlet
-12,No Outlet
-13,No Outlet
+cat local_input.csv | scripts/filter1.exe Streetname | scripts/transform.exe
+go run ./cmd/client/main.go "./scripts/filter1.exe Streetname" "./scripts/transform.exe" input.csv output.csv 3
+2,Streetname - Mast Arm
+8,Streetname - Sesquicentennial
+9,Streetname - Sesquicentennial
+28,Streetname
+45,Streetname
+46,Streetname
+49,Streetname
+50,Streetname
+51,Streetname
+52,Streetname
+53,Streetname
+54,Streetname
+55,Streetname
+56,Streetname
+57,Streetname
+58,Streetname
+59,Streetname
+61,Streetname
+62,Streetname
+63,Streetname
+64,Streetname
+65,Streetname
+66,Streetname
+67,Streetname
+68,Streetname
+69,Streetname
+70,Streetname
+71,Streetname
+72,Streetname
+73,Streetname
+74,Streetname
+75,Streetname
+76,Streetname
 
 App 2:
 cat local_input.csv | scripts/filter2.exe "Punched Telespar" | scripts/aggregate.exe
