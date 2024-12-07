@@ -46,7 +46,7 @@ import (
 const (
 	SERVER_PORT        = 23120            // Not directly used, default port number
 	BUFFER_SIZE        = 65535            // Size of udp buffer for reading incoming msgs
-	FILES_DIR          = ".files"         // Where hydfs files are stored
+	FILES_DIR          = "pkg/hydfs/server/.files"         // Where hydfs files are stored
 	LOG_FILE           = "server.log"     // Where server logs are written
 	REPLICATION_FACTOR = 3                // Num replicas each file should have
 	REPLI_INTERVAL     = 10 * time.Second // Replication period interval
@@ -320,6 +320,7 @@ func (s *Server) HandleCreate(req Request, conn net.Conn, reader *bufio.Reader, 
 	file, _ := os.Create(hydfsPath)
 	for {
 		n, err := reader.Read(buffer)
+		fmt.Printf("Bytes read: %d, Data: %s\n", n, string(buffer[:n]))
 		if err != nil {
 			if err == io.EOF {
 				break // End of file data
@@ -512,6 +513,7 @@ func (s *Server) HandleGet(req Request, conn net.Conn) Response {
 	hydfsPath := filepath.Join(FILES_DIR, req.HyDFSFile)
 	content, err := os.ReadFile(hydfsPath)
 	if err != nil {
+		fmt.Printf("failed to read file: %s\n", hydfsPath)
 		s.logger.Printf("Failed to read file: %v", err)
 		return Response{
 			Status:  "error",
@@ -892,6 +894,7 @@ func (s *Server) AcceptIncomingConnections(address string) {
 	}
 	defer listener.Close()
 	s.logger.Printf("Server is listening on %s", address)
+	logger.Printf("Server is listening on %s", address)
 
 	for {
 		// Accept a new client connection
@@ -1048,7 +1051,7 @@ func main() {
 		return
 	}
 
-	const localAddressFile = "./../../../../mp2/localaddr.txt"
+	const localAddressFile = "./../mp2/localaddr.txt"
 	data, _ := ioutil.ReadFile(localAddressFile)
 	localAddress := string(data)
 	serverAddress := localAddress
@@ -1762,10 +1765,14 @@ func swimMain() {
 
 	var wg sync.WaitGroup
 
-	const localAddressFile = "./../../../../mp2/localaddr.txt"
-	data, _ := ioutil.ReadFile(localAddressFile)
+	const localAddressFile = "./../mp2/localaddr.txt"
+	data, err := ioutil.ReadFile(localAddressFile)
+	if err != nil {
+		log.Fatalf("Failed to read file: %v\n", err)
+	}
 	localAddress := string(data)
-	logFile := "./../../../../mp1/swim.log"
+	fmt.Printf("LOCAL ADDR: %s\n", localAddress)
+	logFile := "./../mp1/swim.log"
 	file, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)

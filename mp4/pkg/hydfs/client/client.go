@@ -31,6 +31,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"strings"
 	"time"
 )
 
@@ -110,6 +111,164 @@ func NewClient(serverAddress string) *Client {
 	return client
 }
 
+func (client *Client) CreateRequest(localFile string, hydfsFile string) (string) {
+	// Check if local file exists
+	if _, err := os.Stat(localFile); os.IsNotExist(err) {
+		fmt.Printf("Local file %s does not exist.\n", localFile)
+		return "error"
+	}
+
+	req := Request{
+		Operation: CREATE,
+		LocalFile: localFile,
+		HyDFSFile: hydfsFile,
+	}
+	resp, _ := client.SendRequest(req)
+	if resp.Status == "redirect" {
+		newAddr := resp.Message
+		oldAddr := client.serverAddr
+		addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+		client.serverAddr = addr
+		_, _ = client.SendRequest(req)
+		content, _ := os.ReadFile(localFile)
+		client.conn.Write(content)
+		client.serverAddr = oldAddr
+		return "success"
+	} else if resp.Status == "exists" {
+		fmt.Printf("File <%s> already exists in HyDFS.\n", hydfsFile)
+		return "error"
+	}
+
+	content, err := os.ReadFile(localFile)
+	if err != nil {
+		return "error"
+	}
+	client.conn.Write(content)
+	fmt.Printf("%s to %s. %d lines.", localFile, hydfsFile, len(strings.Split(string(content), "\n")))
+	client.conn.Close()
+	fmt.Println(resp.Message)
+	return "success"
+}
+
+
+func (client *Client) AppendRequest(localFile string, hydfsFile string) (string) {
+	req := Request{
+		Operation: APPEND,
+		LocalFile: localFile,
+		HyDFSFile: hydfsFile,
+	}
+
+	resp, _ := client.SendRequest(req)
+
+	if resp.Status == "redirect" {
+		newAddr := resp.Message
+		oldAddr := client.serverAddr
+		addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+		client.serverAddr = addr
+		_, _ = client.SendRequest(req)
+		content, _ := os.ReadFile(localFile)
+		client.conn.Write(content)
+		client.serverAddr = oldAddr
+		return "success"
+	} else if resp.Status != "success" {
+		fmt.Println(resp.Message)
+		return "error"
+	}
+	content, _ := os.ReadFile(localFile)
+	client.conn.Write(content)
+	fmt.Println(resp.Message)
+	client.conn.Close()
+	return "success"
+}
+
+func (client *Client) GetRequest(hydfsFile string, localFile string) (string) {
+	// Check if file is in cache
+	if content, exists := client.GetFromCache(hydfsFile); exists {
+		// Write to local file
+		err := os.WriteFile(localFile, []byte(content), 0644)
+		if err != nil {
+			fmt.Printf("Failed to write to local file %s: %v\n", localFile, err)
+			return "error"
+		}
+		fmt.Println("File fetched from cache successfully.")
+		return "error"
+	}
+
+	req := Request{
+		Operation: GET,
+		HyDFSFile: hydfsFile,
+	}
+
+	resp, reader := client.SendRequest(req)
+
+	if resp.Status == "redirect" {
+		newAddr := resp.Message
+		oldAddr := client.serverAddr
+		addr, _ := net.ResolveTCPAddr("tcp", newAddr)
+		client.serverAddr = addr
+		_, reader = client.SendRequest(req)
+
+		// Open or create the local file for writing
+		file, err := os.Create(localFile)
+		if err != nil {
+			fmt.Printf("Failed to create local file %s: %v\n", localFile, err)
+			return "error"
+		}
+		defer file.Close()
+
+		// Read file data from server
+		buffer := make([]byte, 4096)
+		for {
+			n, err := reader.Read(buffer)
+			if err != nil {
+				if err == io.EOF {
+					break // End of file data
+				}
+				fmt.Printf("Failed to read file data: %v\n", err)
+				break
+			}
+			// Write data to local file
+			_, err = file.Write(buffer[:n])
+		}
+		client.serverAddr = oldAddr
+		return "success"
+	} else if resp.Status != "success" {
+		fmt.Println(resp.Message)
+		return "error"
+	}
+
+	// Open or create the local file for writing
+	file, err := os.Create(localFile)
+	if err != nil {
+		fmt.Printf("Failed to create local file %s: %v\n", localFile, err)
+		return "error"
+	}
+	defer file.Close()
+
+	// Read file data from server
+	buffer := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break // End of file data
+			}
+			fmt.Printf("Failed to read file data: %v\n", err)
+			break
+		}
+
+		// Write data to local file
+		_, err = file.Write(buffer[:n])
+		if err != nil {
+			fmt.Printf("Failed to write data to local file: %v\n", err)
+			break
+		}
+	}
+
+	// fmt.Println("File downloaded successfully.")
+	return "success"
+}
+
 // SendRequest reads JSON response until delimiter
 func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 	if c.conn != nil {
@@ -133,30 +292,7 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 	}
 	conn.Write(data)
 	conn.Write([]byte("\n\n")) // Custom delimiter
-	if req.Operation == "create" && req.LocalFile != "" {
-		// Open the local file
-		file, err := os.Open(req.LocalFile)
-		if err != nil {
-			return Response{Status: "error", Message: "Failed to open local file."}, nil
-		}
-		defer file.Close()
 
-		// Stream file content to the server
-		buffer := make([]byte, 4096)
-		for {
-			n, err := file.Read(buffer)
-			if err != nil {
-				if err == io.EOF {
-					break // End of file
-				}
-				return Response{Status: "error", Message: "Failed to read local file."}, nil
-			}
-			_, writeErr := conn.Write(buffer[:n])
-			if writeErr != nil {
-				return Response{Status: "error", Message: "Failed to write file content to server."}, nil
-			}
-		}
-	}
 	// Read JSON response until the delimiter
 	reader := bufio.NewReader(conn)
 	jsonData := make([]byte, 0, 4096) // Buffer to store the JSON response
@@ -178,7 +314,7 @@ func (c *Client) SendRequest(req Request) (Response, *bufio.Reader) {
 		}
 	}
 
-	fmt.Printf("json: %s\n", jsonData)
+	// fmt.Printf("json: %s\n", jsonData)
 	var resp Response
 	err = json.Unmarshal(jsonData, &resp)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"mp4/pkg/api"
-	"mp4/pkg/hydfs/client"
+	// "mp4/pkg/hydfs/client"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -38,16 +38,13 @@ func main() {
 	destFile := args[3]
 	numTasks := args[4]
 
-	hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
-	defer hydfsClient.Close()
-
-	resp, _ := hydfsClient.SendRequest(client.Request{
-		Operation: client.GET,
-		HyDFSFile: srcFile,
-	})
-	if resp.Status == "error" {
-		log.Fatalf("Input file validation failed: %s", resp.Message)
-	}
+	// hydfsClient := client.NewClient("fa24-cs425-0701.cs.illinois.edu:8080")
+	// defer hydfsClient.Close()
+	// saves hydfs <srcFile> as <srcFile> locally, wait why would we do this here, shouldn't this be in the leader
+	// resp := hydfsClient.GetRequest(srcFile, srcFile)
+	// if resp == "error" {
+	// 	log.Fatalf("Input file download failed")
+	// }
 
 	// Connect to the leader
 	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -71,7 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Job submission failed: %v", err)
 	}
-	fmt.Printf("Job submitted successfully, message=%v\n", resp.Message)
+	fmt.Printf("Job submitted successfully")
 }
 
 // parseArguments handles preserving quoted arguments

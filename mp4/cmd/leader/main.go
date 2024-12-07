@@ -7,7 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
+	// "io"
 	"log"
 	"mp4/pkg/api"
 	"mp4/pkg/hydfs/client"
@@ -71,10 +71,12 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	intermediateFiles := make([]string, len(partitions))
 	var wg sync.WaitGroup
 
+	log.Println("Partitioning complete. Running Stage 1...")
 	for i, partition := range partitions {
 		workerID := selectWorker(s.workers, i)
 		workerAddress := s.workers[workerID]
 		intermediateFile := fmt.Sprintf("%s-stage1-part-%d.csv", taskAssignment.TaskId, i)
+		s.hydfsClient.CreateRequest("blank", intermediateFile)
 
 		wg.Add(1)
 		go func(workerAddr, partitionFile, intermediateFile string) {
@@ -94,6 +96,7 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 				DestFile:   intermediateFile,
 				Executable: taskAssignment.Executable1,
 			})
+			// fmt.Printf("EXECUTABLE: %s\n\n\n", taskAssignment.Executable1)
 			if err != nil {
 				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
 				s.reassignTask(taskAssignment.TaskId, partitionFile, intermediateFile)
@@ -108,6 +111,7 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 
 	// Stage 2: Partition intermediate files and run Executable2
 	finalIntermediateFile := fmt.Sprintf("%s-final-stage.csv", taskAssignment.TaskId)
+	s.hydfsClient.CreateRequest("blank", finalIntermediateFile)
 	wg = sync.WaitGroup{}
 
 	for i, intermediateFile := range intermediateFiles {
@@ -185,39 +189,11 @@ func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) 
 	// Local file to store fetched data temporarily
 	localFile := fmt.Sprintf("local_%s", srcFile)
 
-	// Fetch file from HyDFS and stream to local file
-	resp, reader := hydfsClient.SendRequest(client.Request{
-		Operation: client.GET,
-		HyDFSFile: srcFile,
-	})
-	if resp.Status != "success" {
-		fmt.Println(resp.Message)
+	// Fetch file from HyDFS and stores as local file
+	resp := hydfsClient.GetRequest(srcFile, localFile)
+	if resp == "error" {
+		log.Fatalf("Input file download failed")
 	}
-	// Open local file for writing
-	file, err := os.Create(localFile)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to create local file: %v", err)
-	}
-	defer file.Close()
-
-	// Stream file data from server
-	buffer := make([]byte, 4096)
-	for {
-		n, err := reader.Read(buffer)
-		if err != nil {
-			if err == io.EOF {
-				break // End of file
-			}
-			return nil, fmt.Errorf("Failed to read from stream: %v", err)
-		}
-
-		// Write to local file
-		_, err = file.Write(buffer[:n])
-		if err != nil {
-			return nil, fmt.Errorf("Failed to write to local file: %v", err)
-		}
-	}
-
 	log.Println("File fetched successfully and stored locally.")
 
 	// Read the file content into memory for partitioning
@@ -246,7 +222,7 @@ func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) 
 
 		// Debug: Log the partition content
 		log.Printf("Partition %d (%s): Start=%d, End=%d, Lines=%d", i, partitionName, start, end, len(partition))
-		log.Println(strings.Join(partition, "\n"))
+		// log.Println(strings.Join(partition, "\n"))
 
 		// Write partition to a temporary local file
 		tempLocalFile := fmt.Sprintf("temp_%s", partitionName)
@@ -256,15 +232,10 @@ func partitionInput(numTasks int32, srcFile string, hydfsClient *client.Client) 
 		}
 
 		// Upload local file to HyDFS
-		resp, _ := hydfsClient.SendRequest(client.Request{
-			Operation: client.CREATE,
-			HyDFSFile: partitionName,
-			LocalFile: tempLocalFile, // Specify the local file for upload
-		})
-
-		if resp.Status != "success" {
-			log.Printf("Failed to create partition %s: %s", partitionName, resp.Message)
-			return nil, fmt.Errorf("Failed to create partition %s: %s", partitionName, resp.Message)
+		resp := hydfsClient.CreateRequest(tempLocalFile, partitionName)
+		if resp == "error" {
+			log.Printf("Failed to create partition.")
+			return nil, fmt.Errorf("Failed to create partition %s", partitionName)
 		}
 
 		// Clean up temporary local file
