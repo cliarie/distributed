@@ -76,7 +76,6 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 		workerID := selectWorker(s.workers, i)
 		workerAddress := s.workers[workerID]
 		intermediateFile := fmt.Sprintf("%s-stage1-part-%d.csv", taskAssignment.TaskId, i)
-		s.hydfsClient.CreateRequest("blank", intermediateFile)
 
 		wg.Add(1)
 		go func(workerAddr, partitionFile, intermediateFile string) {
@@ -108,15 +107,16 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 	wg.Wait() // Wait for all stage 1 tasks to complete
 
 	log.Println("Stage 1 complete. Running Stage 2...")
+	
 
 	// Stage 2: Partition intermediate files and run Executable2
-	finalIntermediateFile := fmt.Sprintf("%s-final-stage.csv", taskAssignment.TaskId)
-	s.hydfsClient.CreateRequest("blank", finalIntermediateFile)
+	finalIntermediateFiles := make([]string, len(partitions))
 	wg = sync.WaitGroup{}
 
 	for i, intermediateFile := range intermediateFiles {
 		workerID := selectWorker(s.workers, i)
 		workerAddress := s.workers[workerID]
+		finalIntermediateFile := fmt.Sprintf("%s-final-stage-part-%d.csv", taskAssignment.TaskId, i)
 
 		wg.Add(1)
 		go func(workerAddr, intermediateFile, finalFile string) {
@@ -140,6 +140,7 @@ func (s *leaderServer) AssignTask(ctx context.Context, taskAssignment *api.TaskA
 				log.Printf("Worker %s failed to execute task %s; error: %v", workerAddr, taskAssignment.TaskId, err)
 				s.reassignTask(taskAssignment.TaskId, intermediateFile, finalFile)
 			}
+			finalIntermediateFiles[i] = finalFile
 		}(workerAddress, intermediateFile, finalIntermediateFile)
 	}
 
