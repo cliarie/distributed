@@ -444,7 +444,7 @@ func (s *Server) periodicReplicator() {
 			s.logger.Println("Starting periodic replication cycle...")
 
 			// List all files in the ./.files/ directory
-			files, _ := os.ReadDir("./.files/")
+			files, _ := os.ReadDir("./pkg/hydfs/server/.files/")
 
 			// Iterate over each file
 			for _, file := range files {
@@ -941,7 +941,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	}
 	// fmt.Printf("extra bytes: %d\n", reader.Buffered())
 
-	// fmt.Printf("read from client: %s\n", jsonData)
+	fmt.Printf("read from client: %s\n", jsonData)
 	s.processRequest(jsonData, conn, reader)
 	// }
 }
@@ -1777,7 +1777,7 @@ func swimMain() {
 	multiWriter := io.MultiWriter(os.Stdout, file)
 	logger = log.New(multiWriter, "", log.Ldate|log.Ltime)
 
-	const versionFile = "./../../../../mp2/version.txt"
+	const versionFile = "./../mp2/version.txt"
 	versionNumber := 0
 	data, _ = ioutil.ReadFile(versionFile)
 	if data != nil {
