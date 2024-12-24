@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package api;
+
+option go_package = "mp4/pkg/api;api";
+
+service LeaderService{
+    rpc RegisterWorker(WorkerInfo) returns (RegisterResponse);
+    rpc AssignTask(TaskAssignment) returns (TaskResponse);
+    rpc ReportTaskStatus(TaskStatus) returns (StatusResponse);
+}
+
+service WorkerService{
+    rpc ExecuteTask(TaskData) returns (ExecutionResponse);
+    rpc AckTask(AckInfo) returns (AckResponse);
+}
+
+message WorkerInfo{
+    string worker_id = 1;
+    string address = 2;
+}
+
+message RegisterResponse{
+    bool success = 1;
+    string message = 2;
+}
+
+message TaskAssignment{
+    string task_id = 1;
+    string executable1 = 2;
+    string executable2 = 3;
+    int32 num_tasks = 4;
+    string src_file = 5;
+    string dest_file = 6;
+}
+
+message TaskResponse{
+    bool success = 1;
+    string message = 2;
+}
+
+message TaskStatus{
+    string task_id = 1;
+    string status = 2; // completed, failed
+}
+
+message StatusResponse{
+    bool success = 1;
+    string message = 2;
+}
+
+message TaskData{
+    string task_id = 1;
+    repeated Tuple tuples = 2;
+    string src_file = 3;  
+    string dest_file = 4; 
+    string executable = 5;
+}
+
+message ExecutionResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message AckInfo {
+    string task_id = 1;
+    bool ack = 2;
+}
+
+message AckResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message Tuple {
+    string key = 1;
+    string value = 2;
+}
